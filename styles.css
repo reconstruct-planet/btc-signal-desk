@@ -2994,3 +2994,178 @@ button:hover {
     white-space: normal;
   }
 }
+
+/* Top control bar polish: compact glass capsule, not a heavy rectangle. */
+.topbar {
+  top: 12px;
+  width: min(calc(100% - 28px), 1560px);
+  min-height: 76px;
+  margin: 0 auto 18px;
+  padding: 12px 14px 12px 18px;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  border-radius: 28px;
+  border: 1px solid rgba(177, 145, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(13, 16, 29, 0.78), rgba(7, 9, 17, 0.64)),
+    radial-gradient(circle at 12% 0%, rgba(155, 123, 255, 0.18), transparent 42%),
+    radial-gradient(circle at 92% 0%, rgba(123, 224, 255, 0.08), transparent 34%);
+  backdrop-filter: blur(24px) saturate(1.22);
+  box-shadow:
+    0 22px 80px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(155, 123, 255, 0.08);
+}
+
+.topbar::before {
+  left: 24px;
+  right: 24px;
+  bottom: -1px;
+  height: 1px;
+  opacity: 0.72;
+  background: linear-gradient(90deg, transparent, rgba(177, 145, 255, 0.42), rgba(123, 224, 255, 0.22), transparent);
+}
+
+.topbar::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 32%, transparent 68%, rgba(255, 255, 255, 0.035));
+  opacity: 0.7;
+}
+
+.topbar .brand-stack {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "logo eyebrow"
+    "logo status";
+  column-gap: 14px;
+  row-gap: 3px;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+}
+
+.topbar .brand-stack::before {
+  content: "";
+  grid-area: logo;
+  width: 44px;
+  height: 44px;
+  border-radius: 15px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.18), transparent 42%),
+    linear-gradient(135deg, rgba(155, 123, 255, 0.9), rgba(83, 112, 255, 0.66));
+  box-shadow:
+    0 16px 36px rgba(92, 75, 190, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transform: rotate(45deg);
+}
+
+.topbar .eyebrow {
+  grid-area: eyebrow;
+  margin: 0;
+  color: rgba(236, 231, 255, 0.92);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.topbar .title-banner,
+.topbar .hero-copy {
+  display: none;
+}
+
+.topbar .status-rail {
+  grid-area: status;
+  gap: 6px;
+  min-width: 0;
+}
+
+.topbar .status-rail span {
+  min-height: 26px;
+  padding: 0 9px;
+  border-color: rgba(177, 145, 255, 0.12);
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(220, 226, 255, 0.68);
+  font-size: 11px;
+}
+
+.topbar .actions {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(5, 48px) 42px;
+  gap: 7px;
+  padding: 6px;
+  border-radius: 22px;
+  border: 1px solid rgba(177, 145, 255, 0.12);
+  background: rgba(3, 5, 12, 0.32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.topbar .timeframe,
+.topbar .icon-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  height: 38px;
+  margin: 0;
+  padding: 0;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: none;
+}
+
+.topbar .icon-button {
+  font-size: 16px;
+}
+
+.topbar .timeframe.is-active {
+  border-color: rgba(184, 157, 255, 0.4);
+  background:
+    linear-gradient(180deg, rgba(155, 123, 255, 0.28), rgba(88, 117, 255, 0.13)),
+    rgba(255, 255, 255, 0.02);
+  box-shadow:
+    0 10px 28px rgba(92, 75, 190, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    position: static;
+    grid-template-columns: 1fr;
+    border-radius: 24px;
+  }
+
+  .topbar .actions {
+    justify-self: start;
+    grid-template-columns: repeat(3, 48px);
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    width: min(calc(100% - 20px), 1560px);
+    padding: 12px;
+  }
+
+  .topbar .brand-stack {
+    grid-template-columns: auto 1fr;
+  }
+
+  .topbar .status-rail span:nth-child(n + 3) {
+    display: none;
+  }
+
+  .topbar .actions {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
