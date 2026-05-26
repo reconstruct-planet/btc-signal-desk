@@ -12,10 +12,10 @@
       content="BTC Signal Desk is a cinematic real-time BTC market control room with live charting, multi-timeframe scenarios, and on-chain context."
     />
     <title>BTC Signal Desk | Mission Control</title>
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=c136b95" />
-    <link rel="stylesheet" href="styles.css?v=c136b95" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=8b3ba83" />
+    <link rel="stylesheet" href="styles.css?v=8b3ba83" />
     <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <script defer src="app.js?v=c136b95"></script>
+    <script defer src="app.js?v=8b3ba83"></script>
   </head>
   <body>
     <div class="scene" aria-hidden="true">
@@ -31,7 +31,7 @@
       <header class="topbar" aria-label="BTC real-time analysis header">
         <div class="brand-stack">
           <p class="eyebrow">BTC/USDT REAL-TIME SIGNAL</p>
-          <img class="title-banner" src="title-banner.svg?v=c136b95" alt="BTC Signal Desk" />
+          <img class="title-banner" src="title-banner.svg?v=8b3ba83" alt="BTC Signal Desk" />
           <p class="hero-copy">
             A cinematic market control room for live BTC direction, multi-timeframe scenarios, and on-chain context.
           </p>
@@ -51,6 +51,100 @@
           <button id="refreshBtn" class="icon-button" aria-label="Refresh market data" title="Refresh market data">↻</button>
         </div>
       </header>
+
+      <section class="landing-hero" aria-label="AI command center hero">
+        <div class="hero-copy-block">
+          <p class="eyebrow hero-kicker">AI COMMAND CENTER / BTC OS</p>
+          <h1>
+            See the market regime before it becomes obvious.
+          </h1>
+          <p class="hero-subcopy">
+            A premium BTC command center blending live charting, 1Y validation, on-chain context, and automated scenario routing into one cinematic operating surface.
+          </p>
+          <div class="hero-cta-row">
+            <a class="hero-cta hero-cta-primary" href="#chart">Open live chart</a>
+            <a class="hero-cta hero-cta-secondary" href="#scenario-panel">View scenario engine</a>
+          </div>
+          <div class="hero-pills" aria-label="hero proof points">
+            <span>Live BTC stream</span>
+            <span>1Y validated logic</span>
+            <span>Command workflow</span>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-hidden="true">
+          <div class="hero-visual-frame">
+            <span class="hero-grid-overlay"></span>
+            <span class="hero-orb hero-orb-a"></span>
+            <span class="hero-orb hero-orb-b"></span>
+            <span class="hero-orb hero-orb-c"></span>
+            <span class="hero-beam"></span>
+            <span class="hero-ring hero-ring-a"></span>
+            <span class="hero-ring hero-ring-b"></span>
+            <span class="hero-cube"></span>
+            <span class="hero-core"></span>
+            <span class="hero-core-scan"></span>
+            <div class="hero-float hero-float-a">
+              <strong>Live signal</strong>
+              <span id="signalFloatValue">Awaiting analysis</span>
+            </div>
+            <div class="hero-float hero-float-b">
+              <strong>Confidence</strong>
+              <span id="confidenceFloatValue">--%</span>
+            </div>
+            <div class="hero-float hero-float-c">
+              <strong>Automation</strong>
+              <span>3 bots synchronized</span>
+            </div>
+          </div>
+
+          <div class="hero-preview-rail">
+            <div class="preview-card">
+              <span>Model status</span>
+              <strong>Regime lock</strong>
+              <small>Validated against recent structure and on-chain context.</small>
+            </div>
+            <div class="preview-card">
+              <span>Workflow</span>
+              <strong>Signal &gt; Scenario &gt; Execution</strong>
+              <small>Live report updates and scenario routing stay in sync.</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="command-preview" aria-label="dashboard preview">
+        <div class="command-preview-header">
+          <div>
+            <p class="eyebrow">COMMAND PREVIEW</p>
+            <h2>Premium AI trading OS interface</h2>
+          </div>
+          <span class="muted">Floating dashboard widgets</span>
+        </div>
+        <div class="command-preview-grid">
+          <article class="preview-widget preview-widget-large">
+            <span>Market regime</span>
+            <strong>Compression to expansion</strong>
+            <p>Structural shift detector, 1Y validated trade planning, and live chart overlays in one surface.</p>
+          </article>
+          <article class="preview-widget">
+            <span>System health</span>
+            <strong>Stable</strong>
+            <p>WebSocket live feed, interval sync, and overlay toggles remain active.</p>
+          </article>
+          <article class="preview-widget">
+            <span>Automation queue</span>
+            <strong>3 bots live</strong>
+            <p>Capital, leverage, and cumulative records stay visible until reset.</p>
+          </article>
+          <article class="preview-widget preview-widget-graph">
+            <span>Confidence curve</span>
+            <div class="preview-graph">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+          </article>
+        </div>
+      </section>
 
       <section class="hero-grid">
         <article class="signal-panel">
@@ -148,7 +242,7 @@
           </aside>
         </div>
 
-        <aside class="trade-panel" aria-label="trade scenarios">
+        <aside id="scenario-panel" class="trade-panel" aria-label="trade scenarios">
           <div class="section-head">
             <h2>Scenario engine</h2>
             <span id="tradeSideBadge" class="badge neutral">Idle</span>
