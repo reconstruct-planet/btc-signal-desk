@@ -12,10 +12,10 @@
       content="BTC Signal Desk is a cinematic real-time BTC market control room with live charting, multi-timeframe scenarios, and on-chain context."
     />
     <title>BTC Signal Desk | Mission Control</title>
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=topbar-polish" />
-    <link rel="stylesheet" href="styles.css?v=topbar-polish" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=context-polish" />
+    <link rel="stylesheet" href="styles.css?v=context-polish" />
     <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <script defer src="app.js?v=topbar-polish"></script>
+    <script defer src="app.js?v=context-polish"></script>
   </head>
   <body>
     <div class="scene" aria-hidden="true">
@@ -31,7 +31,7 @@
       <header class="topbar" aria-label="BTC real-time analysis header">
         <div class="brand-stack">
           <p class="eyebrow">BTC/USDT REAL-TIME SIGNAL</p>
-          <img class="title-banner" src="title-banner.svg?v=topbar-polish" alt="BTC Signal Desk" />
+          <img class="title-banner" src="title-banner.svg?v=context-polish" alt="BTC Signal Desk" />
           <p class="hero-copy">
             A cinematic market control room for live BTC direction, multi-timeframe scenarios, and on-chain context.
           </p>
@@ -276,8 +276,9 @@
           <h2>Composite report</h2>
           <p id="reportText" class="report-text">Report content is loading.</p>
         </article>
-        <article>
+        <article class="onchain-panel">
           <h2>On-chain context</h2>
+          <p class="panel-note">Network pressure, miner activity, and settlement flow folded into the signal model.</p>
           <div id="onchainGrid" class="metric-grid"></div>
         </article>
       </section>
@@ -287,8 +288,9 @@
           <h2>Top 20 indicators</h2>
           <ul id="indicatorList" class="factor-list"></ul>
         </article>
-        <article>
+        <article class="structure-panel">
           <h2>Price structure</h2>
+          <p class="panel-note">Live support, resistance, and volatility boundaries for the current execution map.</p>
           <div class="levels">
             <div>
               <span>Resistance</span>
