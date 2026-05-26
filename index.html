@@ -3,98 +3,123 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>비트코인 시그널 데스크 | BTC 방향성 대시보드</title>
+    <meta name="theme-color" content="#06070d" />
+    <meta
+      name="description"
+      content="BTC Signal Desk is a cinematic real-time BTC market control room with live charting, multi-timeframe scenarios, and on-chain context."
+    />
+    <title>BTC Signal Desk | Mission Control</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="stylesheet" href="styles.css" />
     <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <script defer src="app.js"></script>
   </head>
   <body>
+    <div class="scene" aria-hidden="true">
+      <span class="scene-orb scene-orb-a"></span>
+      <span class="scene-orb scene-orb-b"></span>
+      <span class="scene-orb scene-orb-c"></span>
+      <span class="scene-grid"></span>
+      <span class="scene-noise"></span>
+      <span class="scene-vignette"></span>
+    </div>
+
     <main class="shell">
-      <section class="topbar" aria-label="비트코인 실시간 분석 요약">
-        <div>
+      <header class="topbar" aria-label="BTC real-time analysis header">
+        <div class="brand-stack">
           <p class="eyebrow">BTC/USDT REAL-TIME SIGNAL</p>
-          <img class="title-banner" src="title-banner.svg" alt="비트코인 시그널 데스크" />
+          <img class="title-banner" src="title-banner.svg" alt="BTC Signal Desk" />
+          <p class="hero-copy">
+            A cinematic market control room for live BTC direction, multi-timeframe scenarios, and on-chain context.
+          </p>
+          <div class="status-rail" aria-label="live status">
+            <span>Live chart</span>
+            <span>1Y validated</span>
+            <span>On-chain aware</span>
+          </div>
         </div>
-        <div class="actions" role="group" aria-label="분석 주기 선택">
-          <button class="timeframe is-active" data-interval="5m">5분</button>
-          <button class="timeframe" data-interval="15m">15분</button>
-          <button class="timeframe" data-interval="1h">1시간</button>
-          <button class="timeframe" data-interval="4h">4시간</button>
-          <button class="timeframe" data-interval="1d">1일</button>
-          <button id="refreshBtn" class="icon-button" aria-label="전체 갱신" title="전체 갱신">↻</button>
+
+        <div class="actions" role="group" aria-label="timeframe selection">
+          <button class="timeframe is-active" data-interval="5m">5m</button>
+          <button class="timeframe" data-interval="15m">15m</button>
+          <button class="timeframe" data-interval="1h">1h</button>
+          <button class="timeframe" data-interval="4h">4h</button>
+          <button class="timeframe" data-interval="1d">1d</button>
+          <button id="refreshBtn" class="icon-button" aria-label="Refresh market data" title="Refresh market data">↻</button>
         </div>
-      </section>
+      </header>
 
       <section class="hero-grid">
         <article class="signal-panel">
           <div class="signal-heading">
-            <span id="signalBadge" class="badge neutral">분석 대기</span>
-            <span id="updatedAt" class="muted">데이터를 불러오는 중</span>
+            <span id="signalBadge" class="badge neutral">Awaiting analysis</span>
+            <span id="updatedAt" class="muted">waiting for data</span>
           </div>
           <div class="signal-main">
             <strong id="signalText">-</strong>
-            <span id="scoreText">종합 점수 - / 100</span>
+            <span id="scoreText">Composite score - / 100</span>
           </div>
-          <div class="meter" aria-label="종합 방향성 점수">
+          <div class="meter" aria-label="composite signal score">
             <span id="meterFill"></span>
           </div>
-          <p id="signalReason" class="reason">20개 기술 지표와 공개 온체인 데이터를 결합해 5분마다 리포트를 갱신합니다.</p>
+          <p id="signalReason" class="reason">
+            We blend technicals, on-chain context, and 1-year validation to refresh the best 5-minute action plan.
+          </p>
         </article>
 
         <article class="price-panel">
-          <span class="label">현재가</span>
+          <span class="label">Current price</span>
           <strong id="priceText">$-</strong>
           <span id="changeText" class="change neutral">24h -</span>
           <dl>
             <div>
-              <dt>선택 주기</dt>
-              <dd id="activeIntervalText">5분</dd>
+              <dt>Active interval</dt>
+              <dd id="activeIntervalText">5m</dd>
             </div>
             <div>
-              <dt>다음 리포트</dt>
+              <dt>Next report</dt>
               <dd id="nextReportText">-</dd>
             </div>
           </dl>
         </article>
       </section>
 
-      <section class="kpi-strip" aria-label="단타 핵심 레벨">
+      <section class="kpi-strip" aria-label="trade levels">
         <div>
-          <span>진입 구간</span>
+          <span>Entry zone</span>
           <strong id="kpiEntryText">$-</strong>
         </div>
         <div>
-          <span>익절 1차</span>
+          <span>Take profit 1</span>
           <strong id="kpiTp1Text">$-</strong>
         </div>
         <div>
-          <span>손절/무효화</span>
+          <span>Stop loss</span>
           <strong id="kpiStopText">$-</strong>
         </div>
         <div>
-          <span>가까운 지지</span>
+          <span>Support</span>
           <strong id="kpiSupportText">$-</strong>
         </div>
         <div>
-          <span>가까운 저항</span>
+          <span>Resistance</span>
           <strong id="kpiResistanceText">$-</strong>
         </div>
       </section>
 
       <section class="chart-layout">
         <div class="chart-stack">
-          <section class="chart-band" aria-label="TradingView 가격 차트">
+          <section class="chart-band" aria-label="TradingView chart">
             <div class="section-head">
-              <h2>TradingView 실시간 차트</h2>
-              <span id="rangeText" class="muted">최근 캔들</span>
+              <h2>Live chart / TradingView</h2>
+              <span id="rangeText" class="muted">latest candles</span>
             </div>
             <div id="chart" class="tv-chart"></div>
           </section>
 
-          <aside class="tool-panel" aria-label="차트 설정">
+          <aside class="tool-panel" aria-label="chart controls">
             <div class="tool-head">
-              <h2>차트 설정</h2>
+              <h2>Chart controls</h2>
               <a class="attribution" href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a>
             </div>
             <div class="tool-controls">
@@ -103,35 +128,39 @@
               <label><input type="checkbox" class="overlay-toggle" data-overlay="ema200" /> EMA 200</label>
               <label><input type="checkbox" class="overlay-toggle" data-overlay="bb" checked /> Bollinger</label>
               <label><input type="checkbox" class="overlay-toggle" data-overlay="vwap" checked /> VWAP</label>
-              <button id="showLevelsBtn" class="wide-button">현재가 진입 표시</button>
-              <button id="recommendScenarioBtn" class="wide-button">추천 시나리오</button>
-              <button id="fitBtn" class="wide-button">전체 차트</button>
+              <button id="showLevelsBtn" class="wide-button">Current entry lock</button>
+              <button id="recommendScenarioBtn" class="wide-button">Recommended scenario</button>
+              <button id="fitBtn" class="wide-button">Fit chart</button>
               <div class="line-editor">
-                <label for="priceLineInput">수동 가격선</label>
+                <label for="priceLineInput">Manual line</label>
                 <div>
-                  <input id="priceLineInput" inputmode="decimal" placeholder="예: 105000" />
-                  <button id="addLineBtn" class="icon-button" title="가격선 추가" aria-label="가격선 추가">＋</button>
+                  <input id="priceLineInput" inputmode="decimal" placeholder="e.g. 105000" />
+                  <button id="addLineBtn" class="icon-button" title="Add line" aria-label="Add line">+</button>
                 </div>
               </div>
             </div>
-            <p class="microcopy">마우스 드래그, 스크롤, 확대/축소로 차트를 조작할 수 있고 실시간 갱신 중에도 현재 시야를 유지합니다.</p>
+            <p class="microcopy">
+              Scroll, zoom, and drag the chart freely. Live data keeps updating without resetting your view.
+            </p>
           </aside>
         </div>
 
-        <aside class="trade-panel" aria-label="단타 매매 시나리오">
+        <aside class="trade-panel" aria-label="trade scenarios">
           <div class="section-head">
-            <h2>단타 시나리오</h2>
-            <span id="tradeSideBadge" class="badge neutral">대기</span>
+            <h2>Scenario engine</h2>
+            <span id="tradeSideBadge" class="badge neutral">Idle</span>
           </div>
-          <p id="tradeSummary" class="microcopy">가격 데이터가 들어오면 진입, 익절, 손절 구간을 계산합니다.</p>
-          <div id="scenarioButtons" class="scenario-buttons" role="tablist" aria-label="추천 시나리오 선택"></div>
-          <section class="scenario-section" aria-label="시나리오 근거">
-            <h3>시나리오 근거</h3>
+          <p id="tradeSummary" class="microcopy">
+            Once market data loads, we calculate entry, take profit, and stop zones with 1-year validation.
+          </p>
+          <div id="scenarioButtons" class="scenario-buttons" role="tablist" aria-label="recommended scenarios"></div>
+          <section class="scenario-section" aria-label="scenario evidence">
+            <h3>Why this setup</h3>
             <ul id="tradeEvidenceList" class="evidence-list"></ul>
           </section>
           <div id="tradePlanList" class="trade-list"></div>
-          <section class="scenario-section" aria-label="실행 체크리스트">
-            <h3>실행 체크리스트</h3>
+          <section class="scenario-section" aria-label="execution checklist">
+            <h3>Execution checklist</h3>
             <ul id="executionChecklist" class="check-list"></ul>
           </section>
         </aside>
@@ -139,71 +168,71 @@
 
       <section class="prediction-band">
         <div class="section-head">
-          <h2>시간대별 예측</h2>
-          <span class="muted">5분, 15분, 1시간, 4시간, 1일</span>
+          <h2>Timeframe forecast</h2>
+          <span class="muted">5m · 15m · 1h · 4h · 1d</span>
         </div>
         <div id="predictionGrid" class="prediction-grid"></div>
       </section>
 
       <section class="report-grid">
         <article>
-          <h2>종합 분석 리포트</h2>
-          <p id="reportText" class="report-text">리포트를 생성하는 중입니다.</p>
+          <h2>Composite report</h2>
+          <p id="reportText" class="report-text">Report content is loading.</p>
         </article>
         <article>
-          <h2>온체인 데이터</h2>
+          <h2>On-chain context</h2>
           <div id="onchainGrid" class="metric-grid"></div>
         </article>
       </section>
 
       <section class="detail-grid">
         <article>
-          <h2>상위 20개 지표 분석</h2>
+          <h2>Top 20 indicators</h2>
           <ul id="indicatorList" class="factor-list"></ul>
         </article>
         <article>
-          <h2>가격 레벨</h2>
+          <h2>Price structure</h2>
           <div class="levels">
             <div>
-              <span>가까운 저항</span>
+              <span>Resistance</span>
               <strong id="resistanceText">$-</strong>
             </div>
             <div>
-              <span>가까운 지지</span>
+              <span>Support</span>
               <strong id="supportText">$-</strong>
             </div>
             <div>
-              <span>ATR 변동폭</span>
+              <span>ATR</span>
               <strong id="atrText">-</strong>
             </div>
           </div>
         </article>
       </section>
 
-      <section class="bot-desk" aria-label="AI 봇 트레이더">
+      <section class="bot-desk" aria-label="AI bot trader">
         <div class="section-head">
-          <h2>AI 봇 트레이더</h2>
-          <span id="botDeskSummary" class="muted">누적 기록 준비 중</span>
+          <h2>AI bot trader desk</h2>
+          <span id="botDeskSummary" class="muted">Preparing bot records</span>
         </div>
         <div class="bot-controls">
           <label>
-            <span>총 자금</span>
+            <span>Total capital</span>
             <input id="botCapitalInput" inputmode="decimal" value="10000" />
           </label>
           <label>
-            <span>레버리지</span>
+            <span>Leverage</span>
             <input id="botLeverageInput" inputmode="decimal" value="5" />
           </label>
-          <button id="botStartBtn" class="wide-button bot-action-primary" type="button">매매 시작</button>
-          <button id="botPauseBtn" class="wide-button" type="button">일시중단</button>
-          <button id="botResetBtn" class="wide-button" type="button">봇 기록 리셋</button>
+          <button id="botStartBtn" class="wide-button bot-action-primary" type="button">Start trading</button>
+          <button id="botPauseBtn" class="wide-button" type="button">Pause</button>
+          <button id="botResetBtn" class="wide-button" type="button">Reset records</button>
         </div>
         <div id="botGrid" class="bot-grid" aria-live="polite"></div>
         <div id="botHistoryPanel" class="bot-history-panel" aria-live="polite"></div>
       </section>
 
       <p class="disclaimer">
-        이 대시보드는 투자 조언이 아닙니다. 공개 시장 데이터와 온체인 데이터를 함께 반영하지만, 실제 매매 전에는 본인의 판단과 추가 확인이 필요합니다.
+        This site is for analysis and simulation only. Market data can lag or fail, and any decision you make remains your responsibility.
       </p>
     </main>
   </body>

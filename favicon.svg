@@ -1,0 +1,23 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="BTC coin icon">
+  <defs>
+    <linearGradient id="fg" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5C96A"/>
+      <stop offset="0.5" stop-color="#7AE7FF"/>
+      <stop offset="1" stop-color="#8F7CFF"/>
+    </linearGradient>
+    <radialGradient id="rg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(86 78) rotate(46) scale(160 160)">
+      <stop stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="#05070D"/>
+  <circle cx="128" cy="128" r="92" fill="url(#fg)" fill-opacity="0.15" stroke="url(#fg)" stroke-opacity="0.8" stroke-width="8"/>
+  <circle cx="128" cy="128" r="66" fill="#0B111C" stroke="url(#fg)" stroke-opacity="0.65" stroke-width="5"/>
+  <circle cx="128" cy="128" r="48" fill="url(#rg)"/>
+  <path d="M115 77H142C157 77 167 85 167 97C167 105 162 112 155 116C165 120 172 128 172 140C172 156 159 167 141 167H115V77Z" fill="url(#fg)"/>
+  <path d="M126 88H142C150 88 155 92 155 99C155 106 150 111 142 111H126V88Z" fill="#05070D" fill-opacity="0.78"/>
+  <path d="M126 121H145C154 121 160 126 160 134C160 143 153 149 143 149H126V121Z" fill="#05070D" fill-opacity="0.78"/>
+  <path d="M103 68V188" stroke="#7AE7FF" stroke-opacity="0.18" stroke-width="2"/>
+  <path d="M153 68V188" stroke="#8F7CFF" stroke-opacity="0.14" stroke-width="2"/>
+</svg>
