@@ -15,28 +15,61 @@ const contentTypes = {
   ".svg": "image/svg+xml",
 };
 
+const securityHeaders = {
+  "Cache-Control": "no-store",
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self' https://cdn.jsdelivr.net",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self' https://api.binance.com https://mempool.space https://api.blockchain.info wss://stream.binance.com:9443",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    "upgrade-insecure-requests",
+  ].join("; "),
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
+
 const server = http.createServer((req, res) => {
+  if (!["GET", "HEAD"].includes(req.method || "")) {
+    res.writeHead(405, { ...securityHeaders, "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Method not allowed");
+    return;
+  }
+
   let requestPath = (req.url || "/").split("?")[0];
   if (requestPath === "/") requestPath = "/index.html";
 
   const safePath = path.resolve(root, "." + requestPath);
   if (safePath !== root && !safePath.startsWith(root + path.sep)) {
-    res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+    res.writeHead(403, { ...securityHeaders, "Content-Type": "text/plain; charset=utf-8" });
     res.end("Forbidden");
     return;
   }
 
   fs.readFile(safePath, (err, data) => {
     if (err) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.writeHead(404, { ...securityHeaders, "Content-Type": "text/plain; charset=utf-8" });
       res.end("Not found");
       return;
     }
 
     res.writeHead(200, {
+      ...securityHeaders,
       "Content-Type": contentTypes[path.extname(safePath).toLowerCase()] || "application/octet-stream",
-      "Cache-Control": "no-store",
     });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     res.end(data);
   });
 });
