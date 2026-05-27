@@ -100,7 +100,7 @@
             </div>
             <div class="hero-float hero-float-c">
               <strong>Automation</strong>
-              <span>3 bots synchronized</span>
+              <span>6 bots synchronized</span>
             </div>
           </div>
 
@@ -302,7 +302,7 @@
           </article>
           <article class="preview-widget">
             <span>Automation queue</span>
-            <strong>3 bots live</strong>
+            <strong>6 bots live</strong>
             <p>Capital, leverage, and cumulative records stay visible until reset.</p>
           </article>
           <article class="preview-widget preview-widget-graph">
@@ -331,7 +331,13 @@
           <button id="botStartBtn" class="wide-button bot-action-primary" type="button">Start trading</button>
           <button id="botPauseBtn" class="wide-button" type="button">Pause</button>
           <button id="botResetBtn" class="wide-button" type="button">Reset records</button>
+          <button id="botExportBtn" class="wide-button" type="button">Export records</button>
+          <button id="botImportBtn" class="wide-button" type="button">Import records</button>
+          <input id="botImportInput" class="visually-hidden" type="file" accept="application/json" />
         </div>
+        <p class="bot-sync-note">
+          Records are saved in this browser. Export records and import the JSON on another device to view the same bot history.
+        </p>
         <div id="botGrid" class="bot-grid" aria-live="polite"></div>
         <div id="botHistoryPanel" class="bot-history-panel" aria-live="polite"></div>
       </section>

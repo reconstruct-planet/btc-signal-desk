@@ -101,6 +101,9 @@ const els = {
   botStartBtn: document.querySelector("#botStartBtn"),
   botPauseBtn: document.querySelector("#botPauseBtn"),
   botResetBtn: document.querySelector("#botResetBtn"),
+  botExportBtn: document.querySelector("#botExportBtn"),
+  botImportBtn: document.querySelector("#botImportBtn"),
+  botImportInput: document.querySelector("#botImportInput"),
   botGrid: document.querySelector("#botGrid"),
   botHistoryPanel: document.querySelector("#botHistoryPanel"),
   resistanceText: document.querySelector("#resistanceText"),
@@ -1696,7 +1699,7 @@ function createDefaultBotDesk() {
         id: "alpha",
         name: "안정형 봇",
         strategy: "winrate",
-        allocation: 0.34,
+        allocation: 0.18,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -1709,7 +1712,7 @@ function createDefaultBotDesk() {
         id: "beta",
         name: "균형형 봇",
         strategy: "expectancy",
-        allocation: 0.33,
+        allocation: 0.17,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -1722,7 +1725,46 @@ function createDefaultBotDesk() {
         id: "gamma",
         name: "공격형 봇",
         strategy: "rr",
-        allocation: 0.33,
+        allocation: 0.17,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        realizedPnl: 0,
+        history: [],
+        openTrade: null,
+        lastTradeTime: null,
+      },
+      {
+        id: "delta",
+        name: "스캘핑 봇",
+        strategy: "expectancy",
+        allocation: 0.16,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        realizedPnl: 0,
+        history: [],
+        openTrade: null,
+        lastTradeTime: null,
+      },
+      {
+        id: "epsilon",
+        name: "추세추종 봇",
+        strategy: "rr",
+        allocation: 0.16,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        realizedPnl: 0,
+        history: [],
+        openTrade: null,
+        lastTradeTime: null,
+      },
+      {
+        id: "zeta",
+        name: "검증형 봇",
+        strategy: "winrate",
+        allocation: 0.16,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -1738,10 +1780,11 @@ function createDefaultBotDesk() {
 function hydrateBotDesk(raw) {
   const fallback = createDefaultBotDesk();
   const bots = fallback.bots.map((base, index) => {
-    const source = raw?.bots?.[index] || {};
+    const source = raw?.bots?.find?.((bot) => bot?.id === base.id) || raw?.bots?.[index] || {};
     return {
       ...base,
       ...source,
+      allocation: base.allocation,
       history: Array.isArray(source.history) ? source.history : [],
       openTrade: source.openTrade || null,
       lastTradeTime: source.lastTradeTime ?? null,
@@ -1804,8 +1847,24 @@ function pickBotScenario(analysis, bot) {
     .sort((a, b) => b.score - a.score)[0]?.plan || scenarios[0];
 }
 
-function botRiskBudget(bot) {
+function botAllocatedCapital(bot) {
   return state.botDesk.settings.capital * bot.allocation;
+}
+
+function botAvailableCapital(bot) {
+  return Math.max(0, botAllocatedCapital(bot) + (Number(bot.realizedPnl) || 0));
+}
+
+function botEquity(bot, price) {
+  return botAllocatedCapital(bot) + (Number(bot.realizedPnl) || 0) + botOpenPnl(bot, price);
+}
+
+function botIsDepleted(bot, price = 0) {
+  return botEquity(bot, price) <= 0 && !bot.openTrade;
+}
+
+function botRiskBudget(bot) {
+  return botAvailableCapital(bot);
 }
 
 function botOpenPnl(bot, price) {
@@ -1856,6 +1915,7 @@ function openBotTrade(bot, analysis, plan, candle, reason = "live") {
   if (bot.openTrade) return false;
 
   const margin = botRiskBudget(bot);
+  if (!Number.isFinite(margin) || margin <= 0) return false;
   const leverage = Math.max(1, Number(state.botDesk.settings.leverage) || 1);
   const notional = margin * leverage;
   const entry = candle?.close ?? analysis.price;
@@ -1944,10 +2004,17 @@ function updateBotDeskOnCandle(candle, analysis) {
     return;
   }
 
+  const hasTradableCapital = state.botDesk.bots.some((bot) => bot.openTrade || !botIsDepleted(bot, candle.close));
+  if (!hasTradableCapital) {
+    state.botDesk.running = false;
+    saveBotDeskState();
+    return;
+  }
+
   state.botDesk.bots.forEach((bot) => {
-    if (bot.openTrade || bot.lastTradeTime === candle.time) return;
+    if (bot.openTrade || bot.lastTradeTime === candle.time || botIsDepleted(bot, candle.close)) return;
     const plan = pickBotScenario(analysis, bot);
-    if (shouldOpenBotTrade(bot, analysis, plan)) {
+    if (plan) {
       changed = openBotTrade(bot, analysis, plan, candle, "live") || changed;
     }
   });
@@ -1968,8 +2035,9 @@ function seedBotDeskFromCurrentAnalysis(analysis) {
   }
 
   state.botDesk.bots.forEach((bot) => {
+    if (botIsDepleted(bot, analysis.price)) return;
     const plan = pickBotScenario(analysis, bot);
-    if (shouldOpenBotTrade(bot, analysis, plan)) {
+    if (plan) {
       openBotTrade(bot, analysis, plan, { time: Date.now(), close: analysis.price }, "seed");
     } else {
       bot.history.push({
@@ -1999,7 +2067,7 @@ function startBotDeskTrading() {
   let changed = false;
 
   state.botDesk.bots.forEach((bot) => {
-    if (bot.openTrade) return;
+    if (bot.openTrade || botIsDepleted(bot, analysis.price)) return;
     const plan = pickBotScenario(analysis, bot);
     if (plan) changed = openBotTrade(bot, analysis, plan, candle, "manual-start") || changed;
   });
@@ -2015,6 +2083,44 @@ function pauseBotDeskTrading() {
   renderBotDesk();
 }
 
+function exportBotDeskRecords() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    app: "btc-signal-desk",
+    version: 2,
+    botDesk: state.botDesk,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `btc-bot-records-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importBotDeskRecords(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.addEventListener("load", () => {
+    try {
+      const parsed = JSON.parse(String(reader.result || "{}"));
+      const imported = parsed.botDesk || parsed;
+      state.botDesk = hydrateBotDesk(imported);
+      state.risk.accountSize = state.botDesk.settings.capital;
+      saveBotDeskState();
+      renderBotDesk();
+    } catch {
+      window.alert("봇 기록 파일을 읽지 못했습니다. Export records로 받은 JSON 파일인지 확인해 주세요.");
+    } finally {
+      if (els.botImportInput) els.botImportInput.value = "";
+    }
+  });
+  reader.readAsText(file);
+}
+
 function renderBotDesk() {
   if (!els.botGrid) return;
   const bots = state.botDesk.bots || [];
@@ -2023,12 +2129,15 @@ function renderBotDesk() {
   const totalTrades = bots.reduce((sum, bot) => sum + bot.trades, 0);
   const totalWins = bots.reduce((sum, bot) => sum + bot.wins, 0);
   const totalPnL = bots.reduce((sum, bot) => sum + bot.realizedPnl + botOpenPnl(bot, price), 0);
+  const totalEquity = bots.reduce((sum, bot) => sum + Math.max(0, botEquity(bot, price)), 0);
+  const depletedBots = bots.filter((bot) => botIsDepleted(bot, price)).length;
+  const activeBots = bots.length - depletedBots;
   const runningLabel = state.botDesk.running ? "RUNNING" : "PAUSED";
-  els.botDeskSummary.textContent = `${runningLabel} · ${fmtInt.format(totalTrades)} trades · 승률 ${totalTrades ? fmt.format((totalWins / totalTrades) * 100) : "0"}% · 누적손익 ${fmtUsd.format(totalPnL)}`;
+  els.botDeskSummary.textContent = `${runningLabel} · ${fmtInt.format(activeBots)}/${fmtInt.format(bots.length)} active bots · ${fmtInt.format(totalTrades)} trades · 승률 ${totalTrades ? fmt.format((totalWins / totalTrades) * 100) : "0"}% · 누적손익 ${fmtUsd.format(totalPnL)} · 잔여자산 ${fmtUsd.format(totalEquity)}`;
 
   els.botCapitalInput.value = fmtInt.format(state.botDesk.settings.capital);
   els.botLeverageInput.value = fmt.format(state.botDesk.settings.leverage);
-  els.botStartBtn.disabled = state.botDesk.running;
+  els.botStartBtn.disabled = state.botDesk.running || activeBots <= 0;
   els.botPauseBtn.disabled = !state.botDesk.running;
 
   els.botGrid.innerHTML = bots.map((bot) => {
@@ -2037,21 +2146,22 @@ function renderBotDesk() {
     const openPnlClass = openPnl > 0 ? "positive" : openPnl < 0 ? "negative" : "neutral";
     const history = [...bot.history].reverse();
     const recent = history.slice(0, 8);
-    const currentValue = bot.allocation * state.botDesk.settings.capital + bot.realizedPnl + openPnl;
+    const currentValue = botEquity(bot, price);
+    const depleted = botIsDepleted(bot, price);
     const winRate = bot.trades ? (bot.wins / bot.trades) * 100 : 0;
     const historyOpen = state.botDesk.activeHistoryBotId === bot.id;
 
     return `
-      <article class="bot-card ${openTrade ? "is-hot" : "is-cold"}">
+      <article class="bot-card ${openTrade ? "is-hot" : "is-cold"} ${depleted ? "is-depleted" : ""}">
         <div class="section-head">
           <h3>${bot.name}</h3>
-          <span class="badge ${openTrade ? "bullish" : state.botDesk.running ? "neutral" : "bearish"}">${openTrade ? "운용 중" : state.botDesk.running ? "진입 대기" : "중단"}</span>
+          <span class="badge ${openTrade ? "bullish" : depleted ? "bearish" : state.botDesk.running ? "neutral" : "bearish"}">${openTrade ? "운용 중" : depleted ? "자산 소진" : state.botDesk.running ? "즉시 재진입" : "중단"}</span>
         </div>
         <div class="bot-meta">
           <div class="bot-line"><span>전략</span><strong>${botStrategyLabel(bot.strategy)}</strong></div>
-          <div class="bot-line"><span>배분 자금</span><strong>${fmtUsd.format(botRiskBudget(bot))}</strong></div>
+          <div class="bot-line"><span>가용 자산</span><strong>${fmtUsd.format(Math.max(0, currentValue))}</strong></div>
           <div class="bot-line"><span>레버리지</span><strong>${fmt.format(state.botDesk.settings.leverage)}x</strong></div>
-          <div class="bot-line"><span>가상 자산</span><strong>${fmtUsd.format(currentValue)}</strong></div>
+          <div class="bot-line"><span>초기 배분</span><strong>${fmtUsd.format(botAllocatedCapital(bot))}</strong></div>
         </div>
         <div class="bot-stats">
           <div class="bot-line"><span>누적 손익</span><strong class="${bot.realizedPnl >= 0 ? "positive" : "negative"}">${fmtUsd.format(bot.realizedPnl)}</strong></div>
@@ -2691,7 +2801,7 @@ function startSocket() {
     const intervalLimit = INTERVALS.find((item) => item.key === state.interval)?.limit || 1000;
     state.candlesByInterval[state.interval] = candles.slice(-intervalLimit);
     state.analyses[state.interval] = analyzeCandlesV2(state.candlesByInterval[state.interval], state.interval);
-    if (k.x) updateBotDeskOnCandle(candle, state.analyses[state.interval]);
+    updateBotDeskOnCandle(candle, state.analyses[state.interval]);
     renderAll();
   };
 
@@ -2795,6 +2905,9 @@ els.timeframeBtns.forEach((item) => item.classList.toggle("is-active", item === 
   });
   els.botStartBtn.addEventListener("click", startBotDeskTrading);
   els.botPauseBtn.addEventListener("click", pauseBotDeskTrading);
+  els.botExportBtn.addEventListener("click", exportBotDeskRecords);
+  els.botImportBtn.addEventListener("click", () => els.botImportInput.click());
+  els.botImportInput.addEventListener("change", () => importBotDeskRecords(els.botImportInput.files?.[0]));
   els.botGrid.addEventListener("click", (event) => {
     const button = event.target.closest("[data-bot-history]");
     if (!button) return;

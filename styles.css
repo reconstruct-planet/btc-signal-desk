@@ -3903,7 +3903,7 @@ body {
 }
 
 .bot-controls {
-  grid-template-columns: repeat(2, minmax(180px, 1fr)) repeat(3, minmax(132px, 0.55fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 10px;
 }
 
@@ -3914,6 +3914,29 @@ body {
 
 .bot-card {
   border-radius: 18px;
+}
+
+.bot-card.is-depleted {
+  opacity: 0.72;
+}
+
+.bot-sync-note {
+  margin: -2px 0 16px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .history-table {
