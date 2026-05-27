@@ -2589,26 +2589,71 @@ function renderReport() {
   if (!composite) return;
 
   const intervalScores = INTERVALS
-    .map((interval) => `${interval.label} ${state.analyses[interval.key]?.score ?? "-"}점`)
-    .join(", ");
+    .map((interval) => {
+      const score = state.analyses[interval.key]?.score;
+      return `<span><b>${interval.label}</b>${score ?? "-"}</span>`;
+    })
+    .join("");
   const chainNotes = composite.chain.notes.slice(0, 4).join(" · ");
   const strongest = [...composite.indicators]
     .sort((a, b) => Math.abs(b.points) - Math.abs(a.points))
     .slice(0, 4)
-    .map((item) => `${item.name} ${scoreLabel(item.signal)}`)
-    .join(", ");
+    .map((item) => `<li><span>${item.name}</span><strong>${scoreLabel(item.signal)}</strong></li>`)
+    .join("");
   const plan = composite.tradePlan;
   const backtest = plan.backtest || { trades: 0, winRate: 0, expectancyR: 0 };
   const validation = plan.validationBacktest || backtest;
+  const activeInterval = INTERVALS.find((item) => item.key === state.interval)?.label || state.interval;
+  const entryText =
+    plan.isCurrentEntry || plan.entryLow === plan.entryHigh
+      ? fmtUsd.format(plan.entryHigh)
+      : `${fmtUsd.format(plan.entryLow)} - ${fmtUsd.format(plan.entryHigh)}`;
+  const validationText = plan.validationPass ? "검증 통과" : "보수적 확인";
 
-  els.reportText.textContent =
-    `현재 선택한 ${INTERVALS.find((item) => item.key === state.interval).label} 기준 종합 판단은 ${composite.text}입니다. ` +
-    `시간대별 기술 점수는 ${intervalScores}이며, 핵심 근거는 ${strongest}입니다. ` +
-    `공개 온체인 반영 결과는 ${chainNotes || "대기 중"}입니다. ` +
-    `단타 시나리오는 ${plan.title}, 진입 ${plan.isCurrentEntry || plan.entryLow === plan.entryHigh ? fmtUsd.format(plan.entryHigh) : `${fmtUsd.format(plan.entryLow)} ~ ${fmtUsd.format(plan.entryHigh)}`}, 1차 익절 ${fmtUsd.format(plan.takeProfit1)}, 손절 ${fmtUsd.format(plan.stopLoss)}입니다. ` +
-    `최종 제시 전 1년 검증(${plan.validationIntervalKey || "1h"})은 ${plan.validationPass ? "통과" : "보수적 재확인 필요"}이며, 승률 ${fmt.format(validation.winRate)}%, 기대값 ${fmt.format(validation.expectancyR)}R, 표본 ${fmtInt.format(validation.trades)}건입니다. ` +
-    `과거 유사 조건 백테스트는 ${fmtInt.format(backtest.trades)}건, 승률 ${fmt.format(backtest.winRate)}%, 기대값 ${fmt.format(backtest.expectancyR)}R입니다. ` +
-    `예상 가격 중심은 ${fmtUsd.format(composite.target)}, 단기 예상 범위는 ${fmtUsd.format(composite.rangeLow)} ~ ${fmtUsd.format(composite.rangeHigh)}입니다.`;
+  els.reportText.innerHTML = `
+    <div class="report-brief">
+      <span class="report-chip">${activeInterval} 기준</span>
+      <strong>${composite.text}</strong>
+      <small>예상 중심 ${fmtUsd.format(composite.target)} · 범위 ${fmtUsd.format(composite.rangeLow)} - ${fmtUsd.format(composite.rangeHigh)}</small>
+    </div>
+    <div class="report-score-strip" aria-label="timeframe score map">
+      ${intervalScores}
+    </div>
+    <div class="report-matrix">
+      <section>
+        <span>매매 계획</span>
+        <strong>${plan.title}</strong>
+        <dl>
+          <div><dt>진입</dt><dd>${entryText}</dd></div>
+          <div><dt>TP1</dt><dd>${fmtUsd.format(plan.takeProfit1)}</dd></div>
+          <div><dt>SL</dt><dd>${fmtUsd.format(plan.stopLoss)}</dd></div>
+        </dl>
+      </section>
+      <section>
+        <span>1년 검증</span>
+        <strong>${validationText}</strong>
+        <dl>
+          <div><dt>승률</dt><dd>${fmt.format(validation.winRate)}%</dd></div>
+          <div><dt>기대값</dt><dd>${fmt.format(validation.expectancyR)}R</dd></div>
+          <div><dt>표본</dt><dd>${fmtInt.format(validation.trades)}</dd></div>
+        </dl>
+      </section>
+    </div>
+    <div class="report-evidence">
+      <section>
+        <span>핵심 지표</span>
+        <ul>${strongest}</ul>
+      </section>
+      <section>
+        <span>온체인 맥락</span>
+        <p>${chainNotes || "공개 API 데이터 대기 중"}</p>
+      </section>
+      <section>
+        <span>백테스트 요약</span>
+        <p>유사 조건 ${fmtInt.format(backtest.trades)}건 · 승률 ${fmt.format(backtest.winRate)}% · 기대값 ${fmt.format(backtest.expectancyR)}R</p>
+      </section>
+    </div>
+  `;
 }
 
 function renderAll() {
