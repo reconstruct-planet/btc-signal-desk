@@ -3533,3 +3533,599 @@ button:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* Readability pass: unify the trading desk into clear scan zones. */
+:root {
+  --desk-max: 1880px;
+  --desk-gutter: clamp(14px, 1.25vw, 24px);
+  --desk-gap: clamp(14px, 1.1vw, 22px);
+  --desk-radius: 22px;
+  --desk-line: rgba(255, 255, 255, 0.085);
+  --desk-panel: rgba(8, 12, 22, 0.84);
+}
+
+body {
+  text-rendering: geometricPrecision;
+  overflow-x: hidden;
+}
+
+.shell {
+  width: min(calc(100vw - (var(--desk-gutter) * 2)), var(--desk-max));
+  padding: 14px 0 32px;
+}
+
+.shell > section {
+  margin-top: var(--desk-gap);
+}
+
+.topbar {
+  width: min(calc(100vw - (var(--desk-gutter) * 2)), var(--desk-max));
+  margin-bottom: var(--desk-gap);
+  padding: 14px 16px;
+  border-radius: 26px;
+}
+
+.topbar .brand-stack {
+  gap: 10px 14px;
+}
+
+.topbar .eyebrow {
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+
+.topbar .title-banner {
+  max-width: min(420px, 42vw);
+}
+
+.topbar .hero-copy {
+  max-width: 58ch;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.topbar .status-rail {
+  gap: 7px;
+}
+
+.topbar .status-rail span {
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.topbar .actions {
+  align-self: center;
+  grid-template-columns: repeat(6, minmax(42px, 1fr));
+  width: min(420px, 100%);
+}
+
+.landing-hero {
+  min-height: auto;
+  padding: clamp(18px, 2vw, 30px);
+  grid-template-columns: minmax(0, 0.95fr) minmax(360px, 0.8fr);
+  align-items: center;
+}
+
+.hero-copy-block h1 {
+  max-width: 15ch;
+  font-size: clamp(36px, 4.2vw, 62px);
+  line-height: 0.98;
+}
+
+.hero-subcopy {
+  max-width: 58ch;
+  font-size: clamp(14px, 1vw, 16px);
+  line-height: 1.65;
+}
+
+.hero-visual-frame {
+  min-height: clamp(270px, 28vw, 400px);
+}
+
+.command-preview {
+  padding: clamp(20px, 2vw, 30px);
+}
+
+.command-preview-header,
+.section-head,
+.tool-head,
+.signal-heading {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.command-preview h2,
+.report-grid h2,
+.detail-grid h2,
+.prediction-band h2,
+.bot-desk h2,
+.section-head h2,
+.tool-head h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(18px, 1.45vw, 24px);
+  line-height: 1.15;
+}
+
+.command-preview-grid {
+  grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.preview-widget {
+  min-height: 150px;
+  border-radius: var(--desk-radius);
+}
+
+.hero-grid {
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.72fr);
+  gap: var(--desk-gap);
+}
+
+.signal-panel,
+.price-panel,
+.tool-panel,
+.trade-panel,
+.chart-band,
+.prediction-band,
+.report-grid article,
+.detail-grid article,
+.bot-desk {
+  border-color: var(--desk-line);
+  border-radius: var(--desk-radius);
+}
+
+.signal-panel,
+.price-panel,
+.tool-panel,
+.trade-panel,
+.prediction-band,
+.report-grid article,
+.detail-grid article,
+.bot-desk {
+  padding: clamp(18px, 1.4vw, 26px);
+}
+
+.signal-main {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+}
+
+.signal-main strong {
+  font-size: clamp(34px, 3.4vw, 58px);
+  line-height: 0.98;
+}
+
+.reason,
+.microcopy,
+.panel-note,
+.prediction-card p,
+.prediction-card span {
+  max-width: 72ch;
+}
+
+.price-panel dl {
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding-top: 18px;
+}
+
+.price-panel dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--desk-line);
+}
+
+.kpi-strip {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  padding: 8px;
+  border-radius: var(--desk-radius);
+}
+
+.kpi-strip div {
+  min-height: 86px;
+  padding: 16px;
+  border-radius: 16px;
+}
+
+.kpi-strip strong {
+  font-size: clamp(17px, 1.35vw, 24px);
+  overflow-wrap: anywhere;
+}
+
+.chart-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+  gap: var(--desk-gap);
+  align-items: start;
+}
+
+.chart-stack {
+  gap: 12px;
+}
+
+.chart-band {
+  padding: clamp(14px, 1.2vw, 20px);
+}
+
+.tv-chart {
+  height: clamp(580px, 72vh, 860px);
+  border-radius: 18px;
+}
+
+.tool-panel {
+  padding: 16px;
+}
+
+.tool-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.tool-panel label,
+.tool-panel .wide-button,
+.line-editor input,
+.line-editor .icon-button {
+  min-height: 42px;
+  margin: 0;
+  border-radius: 14px;
+}
+
+.tool-panel .wide-button {
+  width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.line-editor {
+  grid-column: span 2;
+  min-width: 0;
+  gap: 5px;
+}
+
+.line-editor div {
+  grid-template-columns: minmax(0, 1fr) 42px;
+}
+
+.trade-panel {
+  top: 92px;
+  max-height: calc(100vh - 108px);
+}
+
+.trade-summary,
+#tradeSummary {
+  font-size: 13px;
+  line-height: 1.62;
+}
+
+.scenario-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.scenario-chip {
+  flex: initial;
+  border-radius: 16px;
+}
+
+.trade-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trade-row {
+  min-height: 68px;
+  border-radius: 16px;
+}
+
+.evidence-list li,
+.check-list li {
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.prediction-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.prediction-card {
+  min-height: 160px;
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.prediction-card strong {
+  font-size: clamp(19px, 1.55vw, 26px);
+  line-height: 1.15;
+}
+
+.report-grid {
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.85fr);
+  gap: var(--desk-gap);
+}
+
+.report-dashboard {
+  gap: 14px;
+}
+
+.report-brief strong {
+  max-width: 18ch;
+}
+
+.report-matrix {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.report-evidence section {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.report-evidence section > span {
+  margin: 0;
+}
+
+.detail-grid {
+  grid-template-columns: minmax(0, 1.25fr) minmax(360px, 0.75fr);
+  gap: var(--desk-gap);
+}
+
+.factor-list {
+  gap: 0 18px;
+}
+
+.factor-list li {
+  min-height: 62px;
+}
+
+.onchain-panel .metric-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.onchain-panel .metric {
+  min-height: 84px;
+  border-radius: 16px;
+}
+
+.structure-panel .levels div {
+  min-height: 68px;
+  border-radius: 16px;
+}
+
+.bot-controls {
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) repeat(3, minmax(132px, 0.55fr));
+  gap: 10px;
+}
+
+.bot-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bot-card {
+  border-radius: 18px;
+}
+
+.history-table {
+  overflow-x: auto;
+}
+
+.history-row {
+  min-width: 820px;
+  grid-template-columns: 1.35fr 0.95fr repeat(4, minmax(94px, 0.8fr));
+}
+
+.disclaimer {
+  width: min(100%, var(--desk-max));
+  margin: var(--desk-gap) auto 0;
+  padding: 0 4px;
+}
+
+@media (max-width: 1320px) {
+  .landing-hero,
+  .chart-layout,
+  .report-grid,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trade-panel {
+    position: static;
+    max-height: none;
+  }
+
+  .tool-controls {
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+  }
+
+  .command-preview-grid,
+  .prediction-grid,
+  .bot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kpi-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .shell,
+  .topbar {
+    width: min(calc(100vw - 20px), var(--desk-max));
+  }
+
+  .topbar {
+    position: static;
+  }
+
+  .topbar .title-banner {
+    max-width: 100%;
+  }
+
+  .landing-hero,
+  .hero-copy-block,
+  .hero-visual,
+  .hero-visual-frame,
+  .hero-preview-rail,
+  .preview-card {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .topbar .actions,
+  .tool-controls,
+  .scenario-buttons,
+  .hero-grid,
+  .command-preview-grid,
+  .prediction-grid,
+  .report-grid,
+  .detail-grid,
+  .bot-grid,
+  .bot-controls,
+  .kpi-strip,
+  .onchain-panel .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .line-editor {
+    grid-column: auto;
+  }
+
+  .landing-hero {
+    padding: 20px;
+  }
+
+  .hero-copy-block h1 {
+    max-width: 100%;
+    font-size: 40px;
+  }
+
+  .hero-subcopy {
+    max-width: 100%;
+    font-size: 14px;
+  }
+
+  .hero-cta-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .hero-cta {
+    width: 100%;
+    min-width: 0;
+    padding: 0 12px;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .hero-pills {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .hero-pills span {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .hero-visual {
+    min-height: auto;
+    padding: 14px;
+  }
+
+  .hero-visual-frame {
+    min-height: 300px;
+  }
+
+  .hero-preview-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-ring-a {
+    width: 240px;
+    height: 240px;
+    margin-left: -120px;
+    margin-top: -120px;
+  }
+
+  .hero-ring-b {
+    width: 164px;
+    height: 164px;
+    margin-left: -82px;
+    margin-top: -82px;
+  }
+
+  .hero-core {
+    width: 118px;
+    height: 118px;
+    margin-left: -59px;
+    margin-top: -59px;
+  }
+
+  .hero-cube {
+    width: 76px;
+    height: 76px;
+    margin-left: -38px;
+    margin-top: -38px;
+  }
+
+  .hero-float {
+    min-width: 124px;
+    max-width: calc(100% - 28px);
+    padding: 12px;
+  }
+
+  .hero-float-a {
+    left: 14px;
+    top: 14px;
+  }
+
+  .hero-float-b {
+    right: 14px;
+    top: 34px;
+  }
+
+  .hero-float-c {
+    left: 14px;
+    bottom: 14px;
+  }
+
+  .signal-main,
+  .evidence-list li,
+  .check-list li,
+  .report-evidence section {
+    grid-template-columns: 1fr;
+  }
+
+  .report-score-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-matrix,
+  .report-matrix dl,
+  .factor-list {
+    grid-template-columns: 1fr;
+  }
+
+  .tv-chart {
+    height: 560px;
+  }
+}
