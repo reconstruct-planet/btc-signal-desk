@@ -16,6 +16,9 @@ const VALIDATION_INTERVAL_MAP = {
   "1d": "1d",
 };
 const BOT_DESK_STORAGE_KEY = "btc-signal-bot-desk-v1";
+const BOT_SNAPSHOT_VERSION = 2;
+const BOT_LEARNING_MIN_TRADES = 4;
+const BOT_RECENT_WINDOW = 18;
 
 const state = {
   interval: "5m",
@@ -1777,6 +1780,29 @@ function createDefaultBotDesk() {
   };
 }
 
+function botTimeToMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Date.now();
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+}
+
+function normalizeBotTradeRecord(trade) {
+  const record = trade && typeof trade === "object" ? trade : {};
+  const normalized = {
+    ...record,
+    entry: Number(record.entry) || 0,
+    exit: Number(record.exit) || 0,
+    pnl: Number(record.pnl) || 0,
+    rMultiple: Number(record.rMultiple) || 0,
+    snapshot: record.snapshot || record.contextSnapshot || null,
+    closeSnapshot: record.closeSnapshot || null,
+  };
+  if (!Number.isFinite(Number(normalized.holdingMinutes)) && normalized.snapshot?.capturedAt && normalized.time) {
+    normalized.holdingMinutes = Math.max(0, (botTimeToMs(normalized.time) - botTimeToMs(normalized.snapshot.capturedAt)) / 60000);
+  }
+  return normalized;
+}
+
 function hydrateBotDesk(raw) {
   const fallback = createDefaultBotDesk();
   const bots = fallback.bots.map((base, index) => {
@@ -1785,7 +1811,7 @@ function hydrateBotDesk(raw) {
       ...base,
       ...source,
       allocation: base.allocation,
-      history: Array.isArray(source.history) ? source.history : [],
+      history: Array.isArray(source.history) ? source.history.map(normalizeBotTradeRecord) : [],
       openTrade: source.openTrade || null,
       lastTradeTime: source.lastTradeTime ?? null,
     };
@@ -1821,11 +1847,322 @@ function saveBotDeskState() {
   }
 }
 
+function lastFinite(values = []) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(values[index])) return values[index];
+  }
+  return null;
+}
+
+function compactIndicatorSnapshot(analysis, limit = 20) {
+  return (analysis?.indicators || []).slice(0, limit).map((item) => ({
+    name: item.name,
+    reading: item.reading,
+    signal: Number(item.signal) || 0,
+    points: Number(item.points) || 0,
+    weight: Number(item.weight) || 0,
+  }));
+}
+
+function namedIndicatorValue(analysis, pattern) {
+  const indicator = (analysis?.indicators || []).find((item) => item.name.includes(pattern));
+  return indicator ? {
+    name: indicator.name,
+    reading: indicator.reading,
+    signal: Number(indicator.signal) || 0,
+    points: Number(indicator.points) || 0,
+  } : null;
+}
+
+function buildTradeSnapshot({ bot, analysis, plan, entry, reason }) {
+  const backtest = plan?.backtest || { trades: 0, winRate: 0, expectancyR: 0, profitFactor: 0 };
+  const validation = plan?.validationBacktest || backtest;
+  const chain = analysis?.chain || onchainScore(state.onchain);
+  const ema20 = lastFinite(analysis?.overlays?.ema20 || []);
+  const ema50 = lastFinite(analysis?.overlays?.ema50 || []);
+  const ema200 = lastFinite(analysis?.overlays?.ema200 || []);
+  const vwap = lastFinite(analysis?.overlays?.vwap || []);
+  const atrPct = analysis?.price > 0 ? (analysis.atr / analysis.price) * 100 : 0;
+
+  return {
+    version: BOT_SNAPSHOT_VERSION,
+    capturedAt: Date.now(),
+    bot: {
+      id: bot.id,
+      name: bot.name,
+      strategy: bot.strategy,
+      allocation: bot.allocation,
+    },
+    market: {
+      interval: state.interval,
+      price: analysis?.price || entry,
+      previous: analysis?.previous || null,
+      change24h: analysis?.change24h || 0,
+      compositeScore: analysis?.score || 0,
+      bias: analysis?.bias || "neutral",
+      text: analysis?.text || "",
+      confidence: analysis?.confidence || 0,
+      support: analysis?.support || null,
+      resistance: analysis?.resistance || null,
+      localSupport: analysis?.localSupport || null,
+      localResistance: analysis?.localResistance || null,
+      atr: analysis?.atr || null,
+      atrPct,
+      target: analysis?.target || null,
+      rangeLow: analysis?.rangeLow || null,
+      rangeHigh: analysis?.rangeHigh || null,
+      ema20,
+      ema50,
+      ema200,
+      vwap,
+      macd: namedIndicatorValue(analysis, "MACD"),
+      rsi: namedIndicatorValue(analysis, "RSI"),
+      adx: namedIndicatorValue(analysis, "ADX"),
+      volume: namedIndicatorValue(analysis, "Volume") || namedIndicatorValue(analysis, "거래"),
+    },
+    scenario: {
+      id: plan?.scenarioId || null,
+      name: plan?.scenarioName || plan?.title || "Scenario",
+      label: plan?.scenarioLabel || "",
+      title: plan?.title || "",
+      side: plan?.side || "neutral",
+      summary: plan?.summary || "",
+      entry,
+      entryLow: plan?.entryLow || entry,
+      entryHigh: plan?.entryHigh || entry,
+      takeProfit1: plan?.takeProfit1 || null,
+      takeProfit2: plan?.takeProfit2 || null,
+      takeProfit3: plan?.takeProfit3 || null,
+      stopLoss: plan?.stopLoss || null,
+      invalidation: plan?.invalidation || null,
+      rr: plan?.rr || 0,
+      formulaScore: plan?.formulaScore || 0,
+      validationPass: Boolean(plan?.validationPass),
+      confluence: plan?.confluence?.labels || [],
+    },
+    validation: {
+      intervalKey: plan?.validationIntervalKey || analysis?.validationSummary?.intervalKey || validationIntervalFor(state.interval),
+      trades: validation.trades || 0,
+      winRate: validation.winRate || 0,
+      expectancyR: validation.expectancyR || 0,
+      profitFactor: validation.profitFactor || 0,
+      avgBarsHeld: validation.avgBarsHeld || 0,
+      quality: validation.quality || "unknown",
+    },
+    backtest: {
+      trades: backtest.trades || 0,
+      winRate: backtest.winRate || 0,
+      expectancyR: backtest.expectancyR || 0,
+      profitFactor: backtest.profitFactor || 0,
+      avgBarsHeld: backtest.avgBarsHeld || 0,
+      quality: backtest.quality || "unknown",
+    },
+    onchain: {
+      score: chain.score || 50,
+      notes: (chain.notes || []).slice(0, 5),
+    },
+    indicators: compactIndicatorSnapshot(analysis),
+    decision: {
+      reason,
+      learningAdjustment: 0,
+      strategyScore: 0,
+    },
+  };
+}
+
+function buildCloseSnapshot(trade, exitPrice, candle, exitReason, pnl, rMultiple) {
+  const openedAt = botTimeToMs(trade.openedAt || trade.snapshot?.capturedAt);
+  const closedAt = botTimeToMs(candle?.time ?? Date.now());
+  return {
+    closedAt,
+    exitPrice,
+    exitReason,
+    pnl,
+    rMultiple,
+    holdingMinutes: Math.max(0, (closedAt - openedAt) / 60000),
+    candle: candle ? {
+      time: candle.time,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+    } : null,
+  };
+}
+
+function bucketNumber(value, low, high) {
+  if (!Number.isFinite(value)) return "unknown";
+  if (value < low) return "low";
+  if (value > high) return "high";
+  return "mid";
+}
+
+function tradeFeatureKeysFromSnapshot(snapshot) {
+  if (!snapshot) return [];
+  const market = snapshot.market || {};
+  const scenario = snapshot.scenario || {};
+  const validation = snapshot.validation || {};
+  const onchain = snapshot.onchain || {};
+  const keys = [
+    `interval:${market.interval || "unknown"}`,
+    `side:${scenario.side || "neutral"}`,
+    `bias:${market.bias || "neutral"}`,
+    `confidence:${bucketNumber(market.confidence, 45, 70)}`,
+    `onchain:${bucketNumber(onchain.score, 45, 58)}`,
+    `atr:${bucketNumber(market.atrPct, 0.35, 1.6)}`,
+    `validation:${validation.trades >= 24 && validation.winRate >= 52 && validation.expectancyR > 0 ? "strong" : validation.trades >= 12 ? "mixed" : "thin"}`,
+  ];
+  (snapshot.indicators || [])
+    .filter((item) => Math.abs(Number(item.signal) || 0) >= 0.7)
+    .slice(0, 6)
+    .forEach((item) => keys.push(`indicator:${item.name}:${item.signal > 0 ? "up" : "down"}`));
+  return keys;
+}
+
+function summarizeBotPerformance(bot) {
+  const closed = (bot.history || []).map(normalizeBotTradeRecord);
+  const wins = closed.filter((trade) => trade.pnl >= 0).length;
+  const losses = closed.length - wins;
+  const totalPnl = closed.reduce((sum, trade) => sum + trade.pnl, 0);
+  const totalR = closed.reduce((sum, trade) => sum + trade.rMultiple, 0);
+  const targetCount = closed.filter((trade) => trade.exitReason === "target").length;
+  const stopCount = closed.filter((trade) => trade.exitReason === "stop").length;
+  const recent = closed.slice(-BOT_RECENT_WINDOW);
+  const recentR = recent.reduce((sum, trade) => sum + trade.rMultiple, 0);
+  const featureMap = new Map();
+
+  closed.forEach((trade) => {
+    tradeFeatureKeysFromSnapshot(trade.snapshot).forEach((key) => {
+      const item = featureMap.get(key) || { key, trades: 0, wins: 0, totalR: 0, pnl: 0 };
+      item.trades += 1;
+      if (trade.pnl >= 0) item.wins += 1;
+      item.totalR += trade.rMultiple;
+      item.pnl += trade.pnl;
+      featureMap.set(key, item);
+    });
+  });
+
+  const edges = [...featureMap.values()].map((item) => ({
+    ...item,
+    winRate: item.trades ? (item.wins / item.trades) * 100 : 0,
+    avgR: item.trades ? item.totalR / item.trades : 0,
+  }));
+
+  const strongEdges = edges
+    .filter((item) => item.trades >= BOT_LEARNING_MIN_TRADES && item.avgR > 0.08)
+    .sort((a, b) => b.avgR - a.avgR)
+    .slice(0, 5);
+  const weakEdges = edges
+    .filter((item) => item.trades >= BOT_LEARNING_MIN_TRADES && item.avgR < -0.08)
+    .sort((a, b) => a.avgR - b.avgR)
+    .slice(0, 5);
+
+  return {
+    trades: closed.length,
+    wins,
+    losses,
+    winRate: closed.length ? (wins / closed.length) * 100 : 0,
+    totalPnl,
+    avgR: closed.length ? totalR / closed.length : 0,
+    targetRate: closed.length ? (targetCount / closed.length) * 100 : 0,
+    stopRate: closed.length ? (stopCount / closed.length) * 100 : 0,
+    recentTrades: recent.length,
+    recentAvgR: recent.length ? recentR / recent.length : 0,
+    strongEdges,
+    weakEdges,
+  };
+}
+
+function botLearningProfile(bot) {
+  const performance = summarizeBotPerformance(bot);
+  if (performance.trades < BOT_LEARNING_MIN_TRADES) {
+    return {
+      ...performance,
+      ready: false,
+      summary: `학습 대기: 최소 ${BOT_LEARNING_MIN_TRADES}건 이상 청산 기록이 쌓이면 조건별 보정이 시작됩니다.`,
+    };
+  }
+
+  const recentText = performance.recentAvgR >= 0
+    ? `최근 ${performance.recentTrades}건 평균 ${fmt.format(performance.recentAvgR)}R로 우호적입니다.`
+    : `최근 ${performance.recentTrades}건 평균 ${fmt.format(performance.recentAvgR)}R라 진입 점수를 보수적으로 낮춥니다.`;
+  const edgeText = performance.strongEdges[0]
+    ? `강한 조건: ${performance.strongEdges[0].key.replaceAll(":", " ")}`
+    : "강한 조건은 아직 선별 중입니다.";
+  const weakText = performance.weakEdges[0]
+    ? `취약 조건: ${performance.weakEdges[0].key.replaceAll(":", " ")}`
+    : "뚜렷한 취약 조건은 아직 없습니다.";
+
+  return {
+    ...performance,
+    ready: true,
+    summary: `${recentText} ${edgeText}. ${weakText}.`,
+  };
+}
+
+function botStrategyScore(bot, plan, analysis) {
+  const validation = plan?.validationBacktest || plan?.backtest || {};
+  const entry = tradeEntryReference(plan);
+  const tpMovePct = entry > 0 ? Math.abs((plan.takeProfit1 || entry) - entry) / entry * 100 : 0;
+  const atrPct = analysis?.price > 0 ? (analysis.atr / analysis.price) * 100 : 0;
+  const indicators = analysis?.indicators || [];
+  const namedSignal = (pattern) => indicators.find((item) => item.name.includes(pattern))?.signal || 0;
+  const trendAlignment =
+    (plan.side === "long" ? 1 : -1) *
+    (namedSignal("EMA") + namedSignal("ADX") + namedSignal("VWAP") + namedSignal("Supertrend"));
+
+  if (bot.id === "alpha") {
+    return (validation.winRate || 0) * 1.9 + (plan.validationPass ? 28 : -8) + (validation.profitFactor || 0) * 8;
+  }
+  if (bot.id === "beta") {
+    return (validation.winRate || 0) + (validation.expectancyR || 0) * 24 + (plan.rr || 0) * 8;
+  }
+  if (bot.id === "gamma") {
+    return (plan.rr || 0) * 30 + (plan.breakoutLong || plan.breakdownShort ? 14 : 0) + (validation.expectancyR || 0) * 14;
+  }
+  if (bot.id === "delta") {
+    return 60 - Math.min(28, tpMovePct * 8) + (atrPct < 1.2 ? 14 : -8) + (validation.winRate || 0) * 0.8;
+  }
+  if (bot.id === "epsilon") {
+    return trendAlignment * 10 + (analysis?.confidence || 0) * 0.8 + (plan.rr || 0) * 10;
+  }
+  if (bot.id === "zeta") {
+    return Math.min(45, (validation.trades || 0) * 0.75) + (validation.profitFactor || 0) * 18 + (plan.validationPass ? 20 : -12);
+  }
+  return botTradePlanKey(bot, plan);
+}
+
+function botLearningAdjustment(bot, plan, analysis) {
+  const profile = botLearningProfile(bot);
+  if (!profile.ready) return 0;
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry: tradeEntryReference(plan), reason: "score-preview" });
+  const keys = new Set(tradeFeatureKeysFromSnapshot(snapshot));
+  const matchingStrong = profile.strongEdges.filter((edge) => keys.has(edge.key));
+  const matchingWeak = profile.weakEdges.filter((edge) => keys.has(edge.key));
+  const strongBonus = matchingStrong.reduce((sum, edge) => sum + clamp(edge.avgR * 10 + (edge.winRate - 50) * 0.12, 1, 8), 0);
+  const weakPenalty = matchingWeak.reduce((sum, edge) => sum + clamp(Math.abs(edge.avgR) * 12 + (50 - edge.winRate) * 0.12, 2, 10), 0);
+  const recentBias = clamp(profile.recentAvgR * 10, -12, 12);
+  return clamp(strongBonus - weakPenalty + recentBias, -30, 24);
+}
+
 function botStrategyLabel(strategy) {
   if (strategy === "winrate") return "승률 우선";
   if (strategy === "expectancy") return "기대값 우선";
   if (strategy === "rr") return "손익비 우선";
   return "시나리오";
+}
+
+function botProfileLabel(bot) {
+  const labels = {
+    alpha: "검증 통과와 승률을 가장 먼저 봅니다.",
+    beta: "기대값과 승률의 균형을 봅니다.",
+    gamma: "R/R과 돌파형 시나리오를 선호합니다.",
+    delta: "짧은 TP와 빠른 재진입 조건을 선호합니다.",
+    epsilon: "추세, ADX, EMA/VWAP 정렬을 우선합니다.",
+    zeta: "1년 표본 수와 profit factor를 강하게 봅니다.",
+  };
+  return labels[bot.id] || "봇별 기록 기반 보정을 적용합니다.";
 }
 
 function botTradePlanKey(bot, plan) {
@@ -1843,7 +2180,12 @@ function pickBotScenario(analysis, bot) {
   const scenarios = (analysis?.tradeScenarios || [analysis?.tradePlan].filter(Boolean)).slice(0, 3);
   if (!scenarios.length) return null;
   return scenarios
-    .map((plan) => ({ plan, score: botTradePlanKey(bot, plan) }))
+    .map((plan) => {
+      const baseScore = botTradePlanKey(bot, plan);
+      const strategyScore = botStrategyScore(bot, plan, analysis);
+      const learningAdjustment = botLearningAdjustment(bot, plan, analysis);
+      return { plan, score: baseScore + strategyScore + learningAdjustment, strategyScore, learningAdjustment };
+    })
     .sort((a, b) => b.score - a.score)[0]?.plan || scenarios[0];
 }
 
@@ -1926,6 +2268,11 @@ function openBotTrade(bot, analysis, plan, candle, reason = "live") {
 
   if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(riskUsd) || riskUsd <= 0) return false;
 
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry, reason });
+  snapshot.decision.strategyScore = botStrategyScore(bot, plan, analysis);
+  snapshot.decision.learningAdjustment = botLearningAdjustment(bot, plan, analysis);
+  snapshot.decision.finalScore = botTradePlanKey(bot, plan) + snapshot.decision.strategyScore + snapshot.decision.learningAdjustment;
+
   bot.openTrade = {
     entry,
     side: plan.side,
@@ -1940,6 +2287,7 @@ function openBotTrade(bot, analysis, plan, candle, reason = "live") {
     scenarioName: plan.scenarioName,
     scenarioLabel: plan.scenarioLabel,
     reason,
+    snapshot,
   };
   bot.lastTradeTime = candle?.time ?? Date.now();
   return true;
@@ -1955,6 +2303,7 @@ function closeBotTrade(bot, exitPrice, candle, exitReason) {
   const cost = trade.notional * costRate;
   const pnl = gross - cost;
   const rMultiple = trade.riskUsd > 0 ? pnl / trade.riskUsd : 0;
+  const closeSnapshot = buildCloseSnapshot(trade, exitPrice, candle, exitReason, pnl, rMultiple);
 
   bot.trades += 1;
   if (pnl >= 0) bot.wins += 1;
@@ -1971,6 +2320,9 @@ function closeBotTrade(bot, exitPrice, candle, exitReason) {
     pnl,
     rMultiple,
     exitReason,
+    snapshot: trade.snapshot || null,
+    closeSnapshot,
+    holdingMinutes: closeSnapshot.holdingMinutes,
   });
   bot.openTrade = null;
   bot.lastTradeTime = candle?.time ?? Date.now();
@@ -2150,6 +2502,7 @@ function renderBotDesk() {
     const depleted = botIsDepleted(bot, price);
     const winRate = bot.trades ? (bot.wins / bot.trades) * 100 : 0;
     const historyOpen = state.botDesk.activeHistoryBotId === bot.id;
+    const learning = botLearningProfile(bot);
 
     return `
       <article class="bot-card ${openTrade ? "is-hot" : "is-cold"} ${depleted ? "is-depleted" : ""}">
@@ -2167,6 +2520,10 @@ function renderBotDesk() {
           <div class="bot-line"><span>누적 손익</span><strong class="${bot.realizedPnl >= 0 ? "positive" : "negative"}">${fmtUsd.format(bot.realizedPnl)}</strong></div>
           <div class="bot-line"><span>승률</span><strong>${fmt.format(winRate)}%</strong></div>
           <div class="bot-line"><span>거래 수</span><strong>${fmtInt.format(bot.trades)}회</strong></div>
+        </div>
+        <div class="bot-learning">
+          <strong>${botProfileLabel(bot)}</strong>
+          <span>${learning.summary}</span>
         </div>
         <div class="bot-open">
           <div class="bot-line"><span>현재 시나리오</span><strong>${openTrade ? openTrade.scenarioName : "대기"}</strong></div>
@@ -2200,6 +2557,56 @@ function renderBotDesk() {
   renderBotHistoryPanel();
 }
 
+function renderLearningEdges(profile) {
+  const strong = profile.strongEdges?.length
+    ? profile.strongEdges.map((edge) => `<li><span>${edge.key.replaceAll(":", " ")}</span><strong>${fmt.format(edge.avgR)}R / ${fmt.format(edge.winRate)}%</strong></li>`).join("")
+    : `<li><span>강한 조건 수집 중</span><strong>-</strong></li>`;
+  const weak = profile.weakEdges?.length
+    ? profile.weakEdges.map((edge) => `<li><span>${edge.key.replaceAll(":", " ")}</span><strong>${fmt.format(edge.avgR)}R / ${fmt.format(edge.winRate)}%</strong></li>`).join("")
+    : `<li><span>취약 조건 수집 중</span><strong>-</strong></li>`;
+  return `
+    <div class="learning-edge-grid">
+      <section><h4>가산 조건</h4><ul>${strong}</ul></section>
+      <section><h4>감점 조건</h4><ul>${weak}</ul></section>
+    </div>
+  `;
+}
+
+function renderTradeSnapshotDetails(trade) {
+  const snapshot = trade.snapshot;
+  if (!snapshot) {
+    return `<div class="history-snapshot-empty">이전 버전 거래라 당시 지표 스냅샷이 없습니다. 새 거래부터 자동 저장됩니다.</div>`;
+  }
+  const market = snapshot.market || {};
+  const scenario = snapshot.scenario || {};
+  const validation = snapshot.validation || {};
+  const backtest = snapshot.backtest || {};
+  const onchain = snapshot.onchain || {};
+  const close = trade.closeSnapshot || {};
+  const topIndicators = (snapshot.indicators || [])
+    .slice()
+    .sort((a, b) => Math.abs(b.points || 0) - Math.abs(a.points || 0))
+    .slice(0, 8)
+    .map((item) => `<li><span>${item.name}<small>${item.reading}</small></span><strong>${scoreLabel(item.signal)}</strong></li>`)
+    .join("");
+
+  return `
+    <div class="history-snapshot">
+      <div class="snapshot-grid">
+        <div><span>진입 상황</span><strong>${market.interval || "-"} · ${fmtUsd.format(market.price || trade.entry)}</strong><small>Score ${market.compositeScore || 0}/100 · Confidence ${market.confidence || 0}% · ${market.bias || "neutral"}</small></div>
+        <div><span>가격 구조</span><strong>${fmtUsd.format(market.support || 0)} / ${fmtUsd.format(market.resistance || 0)}</strong><small>ATR ${fmtUsd.format(market.atr || 0)} · ${fmt.format(market.atrPct || 0)}%</small></div>
+        <div><span>시나리오</span><strong>${scenario.name || trade.scenarioName || "-"}</strong><small>Entry ${fmtUsd.format(scenario.entry || trade.entry)} · TP ${fmtUsd.format(scenario.takeProfit1 || 0)} · SL ${fmtUsd.format(scenario.stopLoss || 0)}</small></div>
+        <div><span>1년 검증</span><strong>${fmt.format(validation.winRate || 0)}% · ${fmt.format(validation.expectancyR || 0)}R</strong><small>${fmtInt.format(validation.trades || 0)} samples · PF ${fmt.format(validation.profitFactor || 0)}</small></div>
+        <div><span>과거 유사 조건</span><strong>${fmt.format(backtest.winRate || 0)}% · ${fmt.format(backtest.expectancyR || 0)}R</strong><small>${fmtInt.format(backtest.trades || 0)} samples · PF ${fmt.format(backtest.profitFactor || 0)}</small></div>
+        <div><span>청산</span><strong>${trade.exitReason || "-"} · ${fmt.format(trade.rMultiple || 0)}R</strong><small>${fmt.format(close.holdingMinutes || trade.holdingMinutes || 0)} min · ${fmtUsd.format(trade.pnl || 0)}</small></div>
+      </div>
+      <div class="snapshot-note"><strong>진입 근거</strong><span>${scenario.summary || "시나리오와 지표 합의도를 기준으로 진입했습니다."}</span></div>
+      <div class="snapshot-note"><strong>온체인</strong><span>${fmtInt.format(onchain.score || 50)}/100 · ${(onchain.notes || []).join(" · ") || "온체인 메모 없음"}</span></div>
+      <ul class="snapshot-indicators">${topIndicators || `<li><span>지표 스냅샷 없음</span><strong>-</strong></li>`}</ul>
+    </div>
+  `;
+}
+
 function renderBotHistoryPanel() {
   if (!els.botHistoryPanel) return;
   const bot = (state.botDesk.bots || []).find((item) => item.id === state.botDesk.activeHistoryBotId);
@@ -2208,7 +2615,8 @@ function renderBotHistoryPanel() {
     return;
   }
 
-  const history = [...bot.history].reverse();
+  const profile = botLearningProfile(bot);
+  const history = [...bot.history].map(normalizeBotTradeRecord).reverse();
   const totalPnl = bot.history.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0);
   const bestTrade = bot.history.reduce((best, trade) => Math.max(best, Number(trade.pnl) || 0), 0);
   const worstTrade = bot.history.reduce((worst, trade) => Math.min(worst, Number(trade.pnl) || 0), 0);
@@ -2223,6 +2631,14 @@ function renderBotHistoryPanel() {
         <div><span>최고 거래</span><strong class="${bestTrade >= 0 ? "positive" : "negative"}">${fmtUsd.format(bestTrade)}</strong></div>
         <div><span>최저 거래</span><strong class="${worstTrade >= 0 ? "positive" : "negative"}">${fmtUsd.format(worstTrade)}</strong></div>
         <div><span>승 / 패</span><strong>${fmtInt.format(bot.wins)} / ${fmtInt.format(bot.losses)}</strong></div>
+        <div><span>평균 R</span><strong>${fmt.format(profile.avgR)}R</strong></div>
+        <div><span>TP / SL</span><strong>${fmt.format(profile.targetRate)}% / ${fmt.format(profile.stopRate)}%</strong></div>
+        <div><span>최근 평균</span><strong>${fmt.format(profile.recentAvgR)}R</strong></div>
+      </div>
+      <div class="history-learning">
+        <strong>알고리즘 조정 요약</strong>
+        <p>${profile.summary}</p>
+        ${renderLearningEdges(profile)}
       </div>
       <div class="history-table">
         <div class="history-row history-head">
@@ -2234,14 +2650,17 @@ function renderBotHistoryPanel() {
           <span>손익</span>
         </div>
         ${history.length ? history.map((trade) => `
-          <div class="history-row">
-            <span>${trade.scenarioName || "-"}</span>
-            <span>${trade.side || "-"} · ${trade.exitReason || "-"}</span>
-            <span>${fmtUsd.format(trade.entry)}</span>
-            <span>${fmtUsd.format(trade.exit)}</span>
-            <span>${fmt.format(trade.rMultiple || 0)}R</span>
-            <strong class="${trade.pnl >= 0 ? "positive" : "negative"}">${fmtUsd.format(trade.pnl)}</strong>
-          </div>
+          <details class="history-entry">
+            <summary class="history-row">
+              <span>${trade.scenarioName || "-"}</span>
+              <span>${trade.side || "-"} · ${trade.exitReason || "-"}</span>
+              <span>${fmtUsd.format(trade.entry)}</span>
+              <span>${fmtUsd.format(trade.exit)}</span>
+              <span>${fmt.format(trade.rMultiple || 0)}R</span>
+              <strong class="${trade.pnl >= 0 ? "positive" : "negative"}">${fmtUsd.format(trade.pnl)}</strong>
+            </summary>
+            ${renderTradeSnapshotDetails(trade)}
+          </details>
         `).join("") : `<div class="history-empty">아직 청산된 매매 기록이 없습니다.</div>`}
       </div>
     </section>
