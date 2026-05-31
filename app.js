@@ -19,6 +19,9 @@ const BOT_DESK_STORAGE_KEY = "btc-signal-bot-desk-v1";
 const BOT_SNAPSHOT_VERSION = 2;
 const BOT_LEARNING_MIN_TRADES = 4;
 const BOT_RECENT_WINDOW = 18;
+const RECOMMENDATION_MIN_SAMPLE = 24;
+const RECOMMENDATION_STRONG_SAMPLE = 36;
+const RECOMMENDATION_BOT_MIN_MATCHES = 5;
 
 const state = {
   interval: "5m",
@@ -569,21 +572,27 @@ function simulateTradeOutcome(candles, side, entry, stop, target, startIndex, lo
   const risk = Math.abs(entry - stop);
   if (!Number.isFinite(risk) || risk <= 0) return null;
   const endIndex = Math.min(candles.length - 1, startIndex + lookaheadBars);
+  let maxAdverseR = 0;
 
   for (let i = startIndex + 1; i <= endIndex; i += 1) {
     const bar = candles[i];
+    const adverseR = side === "long"
+      ? Math.max(0, (entry - bar.low) / risk)
+      : Math.max(0, (bar.high - entry) / risk);
+    maxAdverseR = Math.max(maxAdverseR, adverseR);
+
     if (side === "long") {
       const hitStop = bar.low <= stop;
       const hitTarget = bar.high >= target;
-      if (hitStop && hitTarget) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex, ambiguous: true };
-      if (hitStop) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex };
-      if (hitTarget) return { result: "win", rMultiple: (target - entry) / risk, barsHeld: i - startIndex };
+      if (hitStop && hitTarget) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex, ambiguous: true, maxAdverseR };
+      if (hitStop) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex, maxAdverseR };
+      if (hitTarget) return { result: "win", rMultiple: (target - entry) / risk, barsHeld: i - startIndex, maxAdverseR };
     } else {
       const hitStop = bar.high >= stop;
       const hitTarget = bar.low <= target;
-      if (hitStop && hitTarget) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex, ambiguous: true };
-      if (hitStop) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex };
-      if (hitTarget) return { result: "win", rMultiple: (entry - target) / risk, barsHeld: i - startIndex };
+      if (hitStop && hitTarget) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex, ambiguous: true, maxAdverseR };
+      if (hitStop) return { result: "loss", rMultiple: -1, barsHeld: i - startIndex, maxAdverseR };
+      if (hitTarget) return { result: "win", rMultiple: (entry - target) / risk, barsHeld: i - startIndex, maxAdverseR };
     }
   }
 
@@ -593,6 +602,7 @@ function simulateTradeOutcome(candles, side, entry, stop, target, startIndex, lo
     result: rMultiple >= 0 ? "timeout-win" : "timeout-loss",
     rMultiple,
     barsHeld: endIndex - startIndex,
+    maxAdverseR,
   };
 }
 
@@ -614,6 +624,8 @@ function buildHistoricalEdge({ candles, intervalKey, side, mode, metrics }) {
         let totalR = 0;
         let totalBars = 0;
         let totalSetupQuality = 0;
+        let totalAdverseR = 0;
+        let worstAdverseR = 0;
 
         for (let i = 80; i < candles.length - lookahead - 1; i += 1) {
           const setup = setupQualityScore(side, i, metrics, mode);
@@ -646,6 +658,8 @@ function buildHistoricalEdge({ candles, intervalKey, side, mode, metrics }) {
           totalSetupQuality += setup.score;
           totalR += outcome.rMultiple;
           totalBars += outcome.barsHeld;
+          totalAdverseR += outcome.maxAdverseR || 0;
+          worstAdverseR = Math.max(worstAdverseR, outcome.maxAdverseR || 0);
           if (outcome.rMultiple > 0) {
             wins += 1;
             grossProfitR += outcome.rMultiple;
@@ -660,16 +674,22 @@ function buildHistoricalEdge({ candles, intervalKey, side, mode, metrics }) {
         const profitFactor = grossLossR > 0 ? grossProfitR / grossLossR : grossProfitR;
         const avgSetupQuality = totalSetupQuality / trades;
         const winLowerBound = wilsonLowerBound(wins, trades);
+        const avgAdverseR = totalAdverseR / trades;
         const sampleFactor = trades >= 60 ? 1 : trades >= 30 ? 0.94 : trades >= 18 ? 0.82 : 0.64;
-        const expectancyScore = clamp((expectancyR + 0.08) / 0.72, 0, 1);
-        const profitFactorScore = clamp((profitFactor - 0.9) / 1.25, 0, 1);
-        const holdingPenalty = totalBars / trades > lookahead * 0.82 ? 0.92 : 1;
-        const edgePenalty = expectancyR <= 0 || profitFactor < 1.05 ? 0.48 : winRate < 49 ? 0.72 : 1;
+        const winRateScore = clamp((winRate - 48) / 18, 0, 1);
+        const winSafetyScore = clamp(((winLowerBound * 100) - 44) / 18, 0, 1);
+        const expectancyScore = clamp((expectancyR + 0.04) / 0.62, 0, 1);
+        const profitFactorScore = clamp((profitFactor - 0.95) / 1.35, 0, 1);
+        const adverseScore = 1 - clamp((avgAdverseR - 0.34) / 0.72, 0, 1);
+        const holdingPenalty = totalBars / trades > lookahead * 0.82 ? 0.9 : 1;
+        const edgePenalty = expectancyR <= 0 || profitFactor < 1.05 ? 0.36 : winRate < 52 ? 0.66 : 1;
         const score = (
-          winLowerBound * 0.33 +
-          expectancyScore * 0.3 +
-          profitFactorScore * 0.2 +
-          avgSetupQuality * 0.17
+          winRateScore * 0.31 +
+          winSafetyScore * 0.25 +
+          profitFactorScore * 0.17 +
+          expectancyScore * 0.14 +
+          adverseScore * 0.08 +
+          avgSetupQuality * 0.05
         ) * sampleFactor * holdingPenalty * edgePenalty;
         const candidate = {
           mode,
@@ -687,6 +707,8 @@ function buildHistoricalEdge({ candles, intervalKey, side, mode, metrics }) {
           profitFactor,
           avgBarsHeld: totalBars / trades,
           avgSetupQuality,
+          avgAdverseR,
+          maxAdverseR: worstAdverseR,
           score,
           quality: trades >= 24 ? "strong" : trades >= 14 ? "moderate" : "weak",
         };
@@ -715,6 +737,8 @@ function buildHistoricalEdge({ candles, intervalKey, side, mode, metrics }) {
     profitFactor: 0,
     avgBarsHeld: 0,
     avgSetupQuality: 0,
+    avgAdverseR: 0,
+    maxAdverseR: 0,
     score: 0,
     quality: "weak",
   };
@@ -770,6 +794,92 @@ function buildEntryConfluence({ side, price, support, resistance, atr, ema20, em
     ? clamp(rawAnchor, price - atr * profile.lowerWindowAtr, price)
     : clamp(rawAnchor, price, price + atr * profile.upperWindowAtr);
   return { anchor, labels: selected.map((item) => item.label) };
+}
+
+function entryRangePolicy(intervalKey) {
+  const map = {
+    "5m": { idealMinPct: 0.12, idealMaxPct: 0.25, hardMaxPct: 0.32 },
+    "15m": { idealMinPct: 0.18, idealMaxPct: 0.35, hardMaxPct: 0.44 },
+    "1h": { idealMinPct: 0.25, idealMaxPct: 0.52, hardMaxPct: 0.68 },
+    "4h": { idealMinPct: 0.32, idealMaxPct: 0.78, hardMaxPct: 0.96 },
+    "1d": { idealMinPct: 0.45, idealMaxPct: 1.05, hardMaxPct: 1.28 },
+  };
+  return map[intervalKey] || map["1h"];
+}
+
+function entryRangePct(plan, price) {
+  if (!plan || !price) return 0;
+  return Math.abs((plan.entryHigh || 0) - (plan.entryLow || 0)) / price * 100;
+}
+
+function normalizeEntryRange(plan, { price, atr, intervalKey, support, resistance }) {
+  if (!plan || plan.isCurrentEntry || !Number.isFinite(price) || price <= 0) return plan;
+  const policy = entryRangePolicy(intervalKey);
+  const hardWidth = price * (policy.hardMaxPct / 100);
+  const atrFloor = Math.max((atr || price * 0.003) * 0.035, price * 0.00018);
+  const maxWidth = Math.max(atrFloor, hardWidth);
+  const originalLow = Number(plan.entryLow);
+  const originalHigh = Number(plan.entryHigh);
+  if (!Number.isFinite(originalLow) || !Number.isFinite(originalHigh)) return plan;
+
+  let low = Math.min(originalLow, originalHigh);
+  let high = Math.max(originalLow, originalHigh);
+  const currentWidth = high - low;
+
+  if (currentWidth > maxWidth) {
+    if (plan.side === "long") {
+      high = Math.min(high, price);
+      low = high - maxWidth;
+    } else if (plan.side === "short") {
+      low = Math.max(low, price);
+      high = low + maxWidth;
+    } else {
+      const center = clamp((low + high) / 2, support || low, resistance || high);
+      low = center - maxWidth / 2;
+      high = center + maxWidth / 2;
+    }
+  }
+
+  if (plan.side === "long") {
+    low = Math.max(Number.isFinite(support) ? support : low, low);
+    high = Math.min(price, Math.max(high, low));
+  } else if (plan.side === "short") {
+    high = Math.min(Number.isFinite(resistance) ? resistance : high, high);
+    low = Math.max(price, Math.min(low, high));
+  }
+
+  const normalized = {
+    ...plan,
+    entryLow: low,
+    entryHigh: Math.max(high, low),
+  };
+  normalized.entryRangePct = entryRangePct(normalized, price);
+  normalized.entryRangeStatus = normalized.entryRangePct > policy.idealMaxPct
+    ? "Wide entry range / wait for confirmation"
+    : normalized.entryRangePct < policy.idealMinPct
+      ? "Tight tactical entry"
+      : "Controlled entry range";
+  normalized.entryRangeWide = normalized.entryRangePct > policy.idealMaxPct;
+  normalized.entryRangePolicy = policy;
+  return normalized;
+}
+
+function finalizeTradePlan(plan, context) {
+  const normalized = normalizeEntryRange(plan, context);
+  const validation = normalized.validationBacktest || normalized.backtest || {};
+  const formulaScore = Number.isFinite(normalized.formulaScore)
+    ? normalized.formulaScore
+    : scenarioFormulaScore({
+        edge: normalized.backtest,
+        validationEdge: validation,
+        side: normalized.side,
+        bias: context.bias,
+        technicalScore: context.score,
+      });
+  return {
+    ...normalized,
+    formulaScore,
+  };
 }
 
 function buildTradePlan({
@@ -915,6 +1025,132 @@ function buildTradePlan({
   };
 }
 
+function buildTradePlan({
+  price,
+  score,
+  bias,
+  support,
+  resistance,
+  atr,
+  previous,
+  ema20,
+  ema50,
+  vwap,
+  bbMiddle,
+  historicalEdge,
+  validationEdge,
+  validationPass,
+  validationIntervalKey,
+  intervalKey,
+  localSupport,
+  localResistance,
+}) {
+  const atrValue = Math.max(atr || price * 0.006, price * 0.002);
+  const momentum = price >= previous ? 1 : -1;
+  const side = bias === "bearish" ? "short" : bias === "neutral" && momentum < 0 ? "short" : "long";
+  const edge = historicalEdge || { stopAtr: 1.15, rr: 1.25, entryOffsetAtr: 0.08, trades: 0, winRate: 0, expectancyR: 0, profitFactor: 0 };
+  const activeSupport = Number.isFinite(localSupport) ? Math.max(support, localSupport) : support;
+  const activeResistance = Number.isFinite(localResistance) ? Math.min(resistance, localResistance) : resistance;
+  const confluence = buildEntryConfluence({
+    side,
+    price,
+    support: activeSupport,
+    resistance: activeResistance,
+    atr: atrValue,
+    ema20,
+    ema50,
+    vwap,
+    bbMiddle,
+    intervalKey,
+  });
+  const context = { price, atr: atrValue, intervalKey, support: activeSupport, resistance: activeResistance, bias, score };
+
+  if (side === "long" && bias !== "neutral") {
+    const entryCenter = Math.min(price, confluence.anchor);
+    const pullback = Math.max(atrValue * Math.min(edge.entryOffsetAtr || 0.08, 0.14), atrValue * 0.035);
+    const entryHigh = Math.min(price, entryCenter + pullback * 0.32);
+    const entryLow = Math.max(activeSupport, entryHigh - Math.max(pullback, atrValue * 0.055));
+    const stopLoss = Math.min(activeSupport - atrValue * 0.06, entryLow - atrValue * Math.max(edge.stopAtr || 1, 0.9));
+    const riskUnit = Math.max(entryHigh - stopLoss, atrValue * Math.max(edge.stopAtr || 1, 0.9));
+    const rr = clamp(edge.rr || 1.25, 0.95, 1.75);
+    return finalizeTradePlan({
+      side: "long",
+      title: "High-probability long",
+      summary: "Waits for a controlled pullback into support, EMA, or VWAP confluence before a simulated long setup.",
+      entryLow,
+      entryHigh,
+      stopLoss,
+      takeProfit1: entryHigh + riskUnit * Math.min(0.95, rr * 0.7),
+      takeProfit2: entryHigh + riskUnit * rr,
+      takeProfit3: entryHigh + riskUnit * Math.max(rr + 0.55, rr * 1.28),
+      invalidation: stopLoss,
+      rr,
+      confluence,
+      backtest: edge,
+      validationBacktest: validationEdge || edge,
+      validationPass: Boolean(validationPass),
+      validationIntervalKey: validationIntervalKey || validationIntervalFor(intervalKey),
+    }, context);
+  }
+
+  if (side === "short" && bias !== "neutral") {
+    const entryCenter = Math.max(price, confluence.anchor);
+    const pullback = Math.max(atrValue * Math.min(edge.entryOffsetAtr || 0.08, 0.14), atrValue * 0.035);
+    const entryLow = Math.max(price, entryCenter - pullback * 0.32);
+    const entryHigh = Math.min(activeResistance, entryLow + Math.max(pullback, atrValue * 0.055));
+    const stopLoss = Math.max(activeResistance + atrValue * 0.06, entryHigh + atrValue * Math.max(edge.stopAtr || 1, 0.9));
+    const riskUnit = Math.max(stopLoss - entryLow, atrValue * Math.max(edge.stopAtr || 1, 0.9));
+    const rr = clamp(edge.rr || 1.25, 0.95, 1.75);
+    return finalizeTradePlan({
+      side: "short",
+      title: "High-probability short",
+      summary: "Waits for a controlled rejection near resistance, EMA, or VWAP confluence before a simulated short setup.",
+      entryLow,
+      entryHigh,
+      stopLoss,
+      takeProfit1: entryLow - riskUnit * Math.min(0.95, rr * 0.7),
+      takeProfit2: entryLow - riskUnit * rr,
+      takeProfit3: entryLow - riskUnit * Math.max(rr + 0.55, rr * 1.28),
+      invalidation: stopLoss,
+      rr,
+      confluence,
+      backtest: edge,
+      validationBacktest: validationEdge || edge,
+      validationPass: Boolean(validationPass),
+      validationIntervalKey: validationIntervalKey || validationIntervalFor(intervalKey),
+    }, context);
+  }
+
+  const leanLong = score >= 50 || momentum > 0;
+  const rangeCenter = leanLong
+    ? Math.min(price, activeSupport + (activeResistance - activeSupport) * 0.28)
+    : Math.max(price, activeResistance - (activeResistance - activeSupport) * 0.28);
+  const rangeWidth = Math.max(atrValue * 0.08, price * 0.0012);
+  const entryLow = rangeCenter - rangeWidth / 2;
+  const entryHigh = rangeCenter + rangeWidth / 2;
+  const riskUnit = atrValue * Math.max(edge.stopAtr || 1, 1);
+  return finalizeTradePlan({
+    side: leanLong ? "long" : "short",
+    title: "Wait-first range setup",
+    summary: "Market structure is mixed; this scenario is treated as a wait-first simulation until a cleaner edge appears.",
+    entryLow,
+    entryHigh,
+    breakoutLong: resistance + atrValue * 0.18,
+    breakdownShort: support - atrValue * 0.18,
+    stopLoss: leanLong ? activeSupport - atrValue * 0.35 : activeResistance + atrValue * 0.35,
+    takeProfit1: leanLong ? entryHigh + riskUnit * 0.8 : entryLow - riskUnit * 0.8,
+    takeProfit2: leanLong ? entryHigh + riskUnit * 1.15 : entryLow - riskUnit * 1.15,
+    takeProfit3: leanLong ? entryHigh + riskUnit * 1.55 : entryLow - riskUnit * 1.55,
+    invalidation: leanLong ? activeSupport - atrValue * 0.35 : activeResistance + atrValue * 0.35,
+    rr: 1.15,
+    confluence,
+    backtest: edge,
+    validationBacktest: validationEdge || edge,
+    validationPass: Boolean(validationPass),
+    validationIntervalKey: validationIntervalKey || validationIntervalFor(intervalKey),
+  }, context);
+}
+
 function buildCurrentEntryPlan(analysis, historicalEdge, validationEdge, formulaScore) {
   const entry = analysis.price;
   const atrValue = Math.max(analysis.atr || entry * 0.006, entry * 0.002);
@@ -978,13 +1214,73 @@ function buildCurrentEntryPlan(analysis, historicalEdge, validationEdge, formula
   };
 }
 
+function buildCurrentEntryPlan(analysis, historicalEdge, validationEdge, formulaScore) {
+  const entry = analysis.price;
+  const atrValue = Math.max(analysis.atr || entry * 0.006, entry * 0.002);
+  const side = analysis.bias === "bearish" ? "short" : "long";
+  const edge = historicalEdge || { stopAtr: 1.05, rr: 1.25, trades: 0, winRate: 0, expectancyR: 0, profitFactor: 0 };
+  const validation = validationEdge || edge;
+  const rr = clamp(edge.rr || 1.25, 0.95, 1.7);
+  const successScore = Number.isFinite(formulaScore)
+    ? formulaScore
+    : scenarioFormulaScore({ edge, validationEdge: validation, side, bias: analysis.bias, technicalScore: analysis.score || 50 });
+
+  if (side === "short") {
+    const stopLoss = Math.max(entry + atrValue * Math.max(edge.stopAtr || 1, 0.9), analysis.resistance + atrValue * 0.08);
+    const riskUnit = Math.max(stopLoss - entry, atrValue * Math.max(edge.stopAtr || 1, 0.9));
+    return {
+      side: "short",
+      title: "Current-price short lock",
+      summary: "Uses the current price as the simulated short entry and keeps the chart levels fixed while live candles update.",
+      entryLow: entry,
+      entryHigh: entry,
+      stopLoss,
+      takeProfit1: entry - riskUnit * Math.min(0.95, rr * 0.7),
+      takeProfit2: entry - riskUnit * rr,
+      takeProfit3: entry - riskUnit * Math.max(rr + 0.55, rr * 1.28),
+      invalidation: stopLoss,
+      rr,
+      isCurrentEntry: true,
+      backtest: edge,
+      validationBacktest: validation,
+      validationPass: validationPasses(validation),
+      validationIntervalKey: analysis.validationSummary?.intervalKey || validationIntervalFor(state.interval),
+      formulaScore: successScore,
+    };
+  }
+
+  const stopLoss = Math.min(entry - atrValue * Math.max(edge.stopAtr || 1, 0.9), analysis.support - atrValue * 0.08);
+  const riskUnit = Math.max(entry - stopLoss, atrValue * Math.max(edge.stopAtr || 1, 0.9));
+  return {
+    side: "long",
+    title: "Current-price long lock",
+    summary: "Uses the current price as the simulated long entry and keeps the chart levels fixed while live candles update.",
+    entryLow: entry,
+    entryHigh: entry,
+    stopLoss,
+    takeProfit1: entry + riskUnit * Math.min(0.95, rr * 0.7),
+    takeProfit2: entry + riskUnit * rr,
+    takeProfit3: entry + riskUnit * Math.max(rr + 0.55, rr * 1.28),
+    invalidation: stopLoss,
+    rr,
+    isCurrentEntry: true,
+    backtest: edge,
+    validationBacktest: validation,
+    validationPass: validationPasses(validation),
+    validationIntervalKey: analysis.validationSummary?.intervalKey || validationIntervalFor(state.interval),
+    formulaScore: successScore,
+  };
+}
+
 function validationPasses(edge) {
   return Boolean(
     edge &&
     edge.trades >= 24 &&
-    edge.winRate >= 51 &&
-    edge.expectancyR > 0 &&
-    edge.profitFactor >= 1.05
+    edge.winRate >= 55 &&
+    (edge.winLowerBound || 0) >= 47 &&
+    edge.expectancyR > 0.03 &&
+    edge.profitFactor >= 1.1 &&
+    (edge.avgAdverseR || 0) <= 0.9
   );
 }
 
@@ -1009,20 +1305,26 @@ function scenarioFormulaScore({ edge, validationEdge, side, bias, technicalScore
     edge?.avgSetupQuality ?? 0,
     validation?.avgSetupQuality ?? edge?.avgSetupQuality ?? 0,
   ]);
-  const sampleScore = clamp(((validation?.trades ?? 0) - 12) / 48, 0.35, 1);
-  const winSafety = clamp(((validation?.winLowerBound ?? 0) - 42) / 22, 0, 1);
+  const sampleScore = clamp(((validation?.trades ?? 0) - 16) / 56, 0.18, 1);
+  const winRateScore = clamp(((validation?.winRate ?? 0) - 48) / 20, 0, 1);
+  const winSafety = clamp(((validation?.winLowerBound ?? 0) - 43) / 20, 0, 1);
+  const profitFactorScore = clamp(((validation?.profitFactor ?? 0) - 0.95) / 1.25, 0, 1);
+  const expectancyScore = clamp(((validation?.expectancyR ?? 0) + 0.03) / 0.62, 0, 1);
+  const adverseScore = 1 - clamp(((validation?.avgAdverseR ?? 0.55) - 0.35) / 0.8, 0, 1);
   const directionAligned =
     bias === "neutral" ||
     (bias === "bullish" && side === "long") ||
     (bias === "bearish" && side === "short");
   const directionFactor = directionAligned ? 1 : technicalScore > 45 && technicalScore < 55 ? 0.93 : 0.82;
-  const edgeFactor = (validation?.expectancyR ?? 0) > 0 && (validation?.profitFactor ?? 0) >= 1.05 ? 1 : 0.55;
+  const edgeFactor = (validation?.expectancyR ?? 0) > 0 && (validation?.profitFactor ?? 0) >= 1.05 ? 1 : 0.48;
   const score =
-    (edge?.score ?? 0) * 0.28 +
-    (validation?.score ?? 0) * 0.36 +
-    setupScore * 0.16 +
-    winSafety * 0.1 +
-    sampleScore * 0.1;
+    winRateScore * 0.25 +
+    winSafety * 0.2 +
+    profitFactorScore * 0.16 +
+    expectancyScore * 0.13 +
+    sampleScore * 0.12 +
+    adverseScore * 0.08 +
+    setupScore * 0.06;
   return clamp(score * directionFactor * edgeFactor * 100, 0, 100);
 }
 
@@ -1170,6 +1472,279 @@ function buildScenarioPlansV2({
         scenarioHint: `Score ${Math.round(plan.formulaScore ?? 0)}/100 - 1Y ${fmt.format(validation.winRate ?? 0)}% - ${fmt.format(validation.expectancyR ?? 0)}R`,
       };
     });
+}
+
+function sideSign(side) {
+  return side === "short" ? -1 : 1;
+}
+
+function technicalSideBias(analysis, side) {
+  if (!analysis) return 0;
+  const tech = analysis.technicals || {};
+  let score = 0;
+  let total = 0;
+
+  const add = (condition, weight = 1) => {
+    total += weight;
+    score += condition ? weight : 0;
+  };
+
+  add(side === "long" ? analysis.score >= 56 : analysis.score <= 44, 1.2);
+  add(side === "long" ? tech.ema20 >= tech.ema50 && tech.ema50 >= tech.ema200 : tech.ema20 <= tech.ema50 && tech.ema50 <= tech.ema200, 1.1);
+  add(side === "long" ? analysis.price >= tech.vwap : analysis.price <= tech.vwap, 0.9);
+  add(side === "long" ? tech.macdHist >= 0 : tech.macdHist <= 0, 0.9);
+  add(side === "long" ? tech.plusDi >= tech.minusDi : tech.minusDi >= tech.plusDi, 0.9);
+  add((tech.adx || 0) >= 16, 0.6);
+  add(side === "long" ? tech.rsi >= 44 && tech.rsi <= 68 : tech.rsi >= 32 && tech.rsi <= 56, 0.8);
+  add((tech.volumeRatio || 0) >= 0.82, 0.5);
+
+  return total ? clamp(((score / total) - 0.5) * 2, -1, 1) : 0;
+}
+
+function multiTimeframeAlignment(side) {
+  const weights = { "5m": 0.18, "15m": 0.22, "1h": 0.32, "4h": 0.28 };
+  let alignedWeight = 0;
+  let totalWeight = 0;
+  const aligned = [];
+  const conflicts = [];
+
+  Object.entries(weights).forEach(([intervalKey, weight]) => {
+    const analysis = state.analyses[intervalKey];
+    if (!analysis) return;
+    totalWeight += weight;
+    const bias = technicalSideBias(analysis, side);
+    if (bias > 0.18) {
+      alignedWeight += weight;
+      aligned.push(intervalKey);
+    } else if (bias < -0.18) {
+      conflicts.push(intervalKey);
+    }
+  });
+
+  const ratio = totalWeight ? alignedWeight / totalWeight : 0.5;
+  return {
+    ratio,
+    score: ratio * 100,
+    aligned,
+    conflicts,
+    label: `${aligned.length}/${aligned.length + conflicts.length || 1} frames aligned`,
+  };
+}
+
+function scenarioFeatureKeys(plan, analysis, chain) {
+  const entry = tradeEntryReference(plan);
+  const snapshot = buildTradeSnapshot({
+    bot: { id: "top-recommendation", name: "Top recommendation", strategy: "winrate", allocation: 0 },
+    analysis: { ...analysis, chain },
+    plan,
+    entry,
+    reason: "top-recommendation-preview",
+  });
+  return tradeFeatureKeysFromSnapshot(snapshot);
+}
+
+function recommendationBotAdjustment(plan, analysis, chain) {
+  const keys = new Set(scenarioFeatureKeys(plan, analysis, chain));
+  const matched = [];
+  (state.botDesk?.bots || []).forEach((bot) => {
+    (bot.history || []).map(normalizeBotTradeRecord).forEach((trade) => {
+      const tradeKeys = tradeFeatureKeysFromSnapshot(trade.snapshot);
+      if (tradeKeys.some((key) => keys.has(key))) matched.push(trade);
+    });
+  });
+
+  if (matched.length < RECOMMENDATION_BOT_MIN_MATCHES) {
+    return { adjustment: 0, matches: matched.length, winRate: 0, avgR: 0, note: "Bot record sample is still too small for top recommendation adjustment." };
+  }
+
+  const wins = matched.filter((trade) => trade.pnl >= 0).length;
+  const avgR = matched.reduce((sum, trade) => sum + (Number(trade.rMultiple) || 0), 0) / matched.length;
+  const stopRate = matched.filter((trade) => trade.exitReason === "stop").length / matched.length * 100;
+  const targetRate = matched.filter((trade) => trade.exitReason === "target").length / matched.length * 100;
+  const winRate = (wins / matched.length) * 100;
+  const adjustment = clamp((winRate - 50) * 0.12 + avgR * 9 + (targetRate - stopRate) * 0.035, -12, 10);
+  return {
+    adjustment,
+    matches: matched.length,
+    winRate,
+    avgR,
+    stopRate,
+    targetRate,
+    note: `Bot pattern sample ${fmtInt.format(matched.length)} / win ${fmt.format(winRate)}% / avg ${fmt.format(avgR)}R`,
+  };
+}
+
+function buildRecommendationChecks(plan, analysis, chain) {
+  const tech = analysis.technicals || {};
+  const side = plan.side === "short" ? "short" : "long";
+  const isLong = side === "long";
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const backtest = plan.backtest || validation;
+  const entry = tradeEntryReference(plan);
+  const stopDistancePct = entry > 0 ? Math.abs(entry - plan.stopLoss) / entry * 100 : 0;
+  const rr = plan.rr || 0;
+  const rangePct = entryRangePct(plan, analysis.price);
+  const policy = entryRangePolicy(state.interval);
+  const levelDistance = isLong ? analysis.resistanceGap : analysis.supportGap;
+  const onchainDirectional = isLong ? chain.score : 100 - chain.score;
+  const mtf = multiTimeframeAlignment(side);
+
+  return {
+    validation,
+    backtest,
+    side,
+    entry,
+    rangePct,
+    policy,
+    mtf,
+    bot: recommendationBotAdjustment(plan, analysis, chain),
+    checks: {
+      sample: (validation.trades || 0) >= RECOMMENDATION_MIN_SAMPLE,
+      strongSample: (validation.trades || 0) >= RECOMMENDATION_STRONG_SAMPLE,
+      winRate: (validation.winRate || 0) >= 55,
+      winLower: (validation.winLowerBound || 0) >= 47,
+      expectancy: (validation.expectancyR || 0) > 0.03,
+      profitFactor: (validation.profitFactor || 0) >= 1.1,
+      adverse: (validation.avgAdverseR || 0.55) <= 0.9,
+      ema: isLong ? tech.ema20 >= tech.ema50 && tech.ema50 >= tech.ema200 : tech.ema20 <= tech.ema50 && tech.ema50 <= tech.ema200,
+      vwap: isLong ? analysis.price >= tech.vwap : analysis.price <= tech.vwap,
+      macd: isLong ? tech.macdHist >= 0 : tech.macdHist <= 0,
+      adx: (tech.adx || 0) >= 16 && (isLong ? tech.plusDi >= tech.minusDi : tech.minusDi >= tech.plusDi),
+      rsi: isLong ? tech.rsi >= 44 && tech.rsi <= 68 : tech.rsi >= 32 && tech.rsi <= 56,
+      volatility: (tech.atrPct || 0) >= 0.05 && (tech.atrPct || 0) <= (state.interval === "5m" ? 1.35 : state.interval === "15m" ? 1.65 : 2.4),
+      volume: (tech.volumeRatio || 0) >= 0.82,
+      levelRoom: Number.isFinite(levelDistance) && levelDistance >= Math.max(stopDistancePct * 0.7, 0.18),
+      range: rangePct <= policy.idealMaxPct,
+      rr: rr >= 0.95 && rr <= 1.9,
+      mtf: mtf.ratio >= 0.52,
+      onchain: onchainDirectional >= 42,
+    },
+  };
+}
+
+function recommendationScoreFromChecks(plan, analysis, chain) {
+  const built = buildRecommendationChecks(plan, analysis, chain);
+  const { checks, validation, backtest, mtf, bot, rangePct, policy } = built;
+  const weightedChecks = [
+    ["sample", 8], ["winRate", 13], ["winLower", 8], ["expectancy", 8], ["profitFactor", 9], ["adverse", 5],
+    ["ema", 7], ["vwap", 5], ["macd", 5], ["adx", 5], ["rsi", 5], ["volatility", 5], ["volume", 4],
+    ["levelRoom", 4], ["range", 4], ["rr", 3], ["mtf", 8], ["onchain", 2],
+  ];
+  const checkScore = weightedChecks.reduce((sum, [key, weight]) => sum + (checks[key] ? weight : 0), 0);
+  const maxCheckScore = weightedChecks.reduce((sum, [, weight]) => sum + weight, 0);
+  const currentScore = maxCheckScore ? (checkScore / maxCheckScore) * 100 : 50;
+  const validationScore =
+    clamp(((validation.winRate || 0) - 45) / 20, 0, 1) * 30 +
+    clamp(((validation.winLowerBound || 0) - 40) / 20, 0, 1) * 18 +
+    clamp(((validation.profitFactor || 0) - 0.95) / 1.25, 0, 1) * 16 +
+    clamp(((validation.expectancyR || 0) + 0.03) / 0.62, 0, 1) * 14 +
+    clamp(((validation.trades || 0) - 12) / 56, 0, 1) * 12 +
+    (1 - clamp(((validation.avgAdverseR || 0.55) - 0.35) / 0.8, 0, 1)) * 10;
+  const similarScore =
+    clamp(((backtest.winRate || 0) - 45) / 18, 0, 1) * 40 +
+    clamp(((backtest.expectancyR || 0) + 0.03) / 0.6, 0, 1) * 25 +
+    clamp(((backtest.profitFactor || 0) - 0.95) / 1.2, 0, 1) * 20 +
+    clamp(((backtest.trades || 0) - 8) / 36, 0, 1) * 15;
+  const rangePenalty = rangePct > policy.hardMaxPct ? 12 : rangePct > policy.idealMaxPct ? 5 : 0;
+  const conflictPenalty = mtf.conflicts.length >= 2 ? 8 : mtf.conflicts.length === 1 ? 3 : 0;
+  const thinPenalty = (validation.trades || 0) < RECOMMENDATION_MIN_SAMPLE ? 12 : 0;
+  const rawScore = validationScore * 0.42 + currentScore * 0.27 + similarScore * 0.12 + mtf.score * 0.12 + bot.adjustment + (chain.score - 50) * (plan.side === "long" ? 0.04 : -0.02);
+  const recommendationScore = clamp(rawScore - rangePenalty - conflictPenalty - thinPenalty, 0, 100);
+  const estimatedWinRate = clamp(
+    (validation.winRate || 0) * 0.6 +
+    (backtest.winRate || validation.winRate || 0) * 0.2 +
+    (currentScore - 50) * 0.08 +
+    (mtf.score - 50) * 0.06 +
+    bot.adjustment * 0.1,
+    35,
+    72,
+  );
+  const hardGate =
+    checks.sample &&
+    checks.winRate &&
+    checks.expectancy &&
+    checks.profitFactor &&
+    checks.mtf &&
+    checks.range &&
+    currentScore >= 56;
+
+  let grade = "C";
+  if (hardGate && recommendationScore >= 84 && estimatedWinRate >= 58 && checks.strongSample && checks.winLower) grade = "A+";
+  else if (hardGate && recommendationScore >= 72 && estimatedWinRate >= 55) grade = "A";
+  else if (recommendationScore >= 58 && (validation.trades || 0) >= 12) grade = "B";
+
+  const reasons = [];
+  if (checks.winRate) reasons.push(`1Y validation win rate ${fmt.format(validation.winRate)}%`);
+  if (checks.profitFactor) reasons.push(`Profit factor ${fmt.format(validation.profitFactor)} with positive expectancy`);
+  if (checks.mtf) reasons.push(`${mtf.label}: ${mtf.aligned.join(", ") || "current frame"} supports ${plan.side}`);
+  if (checks.ema) reasons.push("EMA 20/50/200 alignment supports the scenario");
+  if (checks.vwap) reasons.push("Price is on the correct VWAP side");
+  if (checks.adx) reasons.push("Trend strength / DI direction confirms momentum");
+  if (checks.range) reasons.push(`Entry range is controlled at ${fmt.format(rangePct)}%`);
+  if (bot.matches >= RECOMMENDATION_BOT_MIN_MATCHES && bot.adjustment > 0) reasons.push(bot.note);
+
+  const risks = [];
+  if (!checks.sample) risks.push(`1Y sample is thin: ${fmtInt.format(validation.trades || 0)} trades`);
+  if (!checks.winRate) risks.push(`Validation win rate is below the high-probability threshold (${fmt.format(validation.winRate || 0)}%)`);
+  if (!checks.profitFactor) risks.push(`Profit factor is weak (${fmt.format(validation.profitFactor || 0)})`);
+  if (!checks.expectancy) risks.push(`Expectancy is not strong enough (${fmt.format(validation.expectancyR || 0)}R)`);
+  if (!checks.mtf) risks.push(`Timeframes conflict: ${mtf.conflicts.join(", ") || "mixed signals"}`);
+  if (!checks.range) risks.push(`Entry range is wide (${fmt.format(rangePct)}%); wait for a tighter trigger`);
+  if (!checks.volatility) risks.push(`ATR volatility is outside the preferred band (${fmt.format(analysis.technicals?.atrPct || 0)}%)`);
+  if (!checks.volume) risks.push(`Volume confirmation is weak (${fmt.format(analysis.technicals?.volumeRatio || 0)}x average)`);
+  if (bot.matches >= RECOMMENDATION_BOT_MIN_MATCHES && bot.adjustment < 0) risks.push(bot.note);
+
+  return {
+    recommendationScore,
+    estimatedWinRate,
+    grade,
+    highProbability: grade === "A+" || grade === "A",
+    currentScore,
+    validationScore,
+    similarScore,
+    mtf,
+    botAdjustment: bot,
+    reasons: reasons.slice(0, 5),
+    risks: risks.slice(0, 4),
+  };
+}
+
+function applyRecommendationModelToPlan(plan, analysis, chain) {
+  if (!plan) return plan;
+  const normalized = normalizeEntryRange(plan, {
+    price: analysis.price,
+    atr: analysis.atr,
+    intervalKey: state.interval,
+    support: analysis.localSupport || analysis.support,
+    resistance: analysis.localResistance || analysis.resistance,
+  });
+  const evaluation = recommendationScoreFromChecks(normalized, analysis, chain);
+  const validation = normalized.validationBacktest || normalized.backtest || {};
+  return {
+    ...normalized,
+    ...evaluation,
+    validationPass: validationPasses(validation),
+    recommendationStatus: evaluation.highProbability ? "candidate" : "wait",
+    scenarioHint: `${evaluation.grade} - win ${fmt.format(evaluation.estimatedWinRate)}% - S${Math.round(evaluation.recommendationScore)}`,
+  };
+}
+
+function applyRecommendationModelToScenarios(scenarios, analysis, chain) {
+  const evaluated = (scenarios || [])
+    .filter(Boolean)
+    .map((plan) => applyRecommendationModelToPlan(plan, analysis, chain))
+    .sort((a, b) =>
+      (b.highProbability ? 1 : 0) - (a.highProbability ? 1 : 0) ||
+      (b.recommendationScore || 0) - (a.recommendationScore || 0) ||
+      (b.estimatedWinRate || 0) - (a.estimatedWinRate || 0)
+    );
+  return evaluated.slice(0, 3).map((plan, index) => ({
+    ...plan,
+    scenarioIndex: index,
+    scenarioId: `scenario-${index}-${plan.side}`,
+    scenarioLabel: index === 0 ? "Top pick" : `Alt ${index + 1}`,
+    scenarioName: plan.grade === "C" ? "Wait-first" : `${plan.grade} ${plan.side === "short" ? "Short" : "Long"}`,
+  }));
 }
 
 function scoreLabel(signal) {
@@ -1391,6 +1966,13 @@ function analyzeCandlesV2(candles, intervalKey = state.interval, validationCandl
   const bbWidth = ((bbUpper - bbLower) / bbMiddle) * 100;
   const atrNow = last(atr.filter((value) => value !== null));
   const macdHist = macd.hist;
+  const rsiNow = last(rsi.filter((value) => value !== null));
+  const macdHistNow = last(macd.hist.filter((value) => value !== null));
+  const macdHistPrev = macd.hist.filter((value) => value !== null).slice(-2)[0] || macdHistNow;
+  const ema20Now = last(ema20);
+  const ema50Now = last(ema50);
+  const ema200Now = last(ema200);
+  const vwapNow = last(vwap);
 
   const indicators = [
     makeIndicator("EMA 추세", `20/50/200: ${fmtUsd.format(last(ema20))} / ${fmtUsd.format(last(ema50))} / ${fmtUsd.format(last(ema200))}`, price > last(ema20) && last(ema20) > last(ema50) ? 1 : price < last(ema20) && last(ema20) < last(ema50) ? -1 : 0, 1.35),
@@ -1524,6 +2106,22 @@ function analyzeCandlesV2(candles, intervalKey = state.interval, validationCandl
     historicalEdges,
     validationEdges,
     validationSummary,
+    technicals: {
+      ema20: ema20Now,
+      ema50: ema50Now,
+      ema200: ema200Now,
+      vwap: vwapNow,
+      rsi: rsiNow,
+      macdHist: macdHistNow,
+      macdHistPrev,
+      adx: adxValue.adx,
+      plusDi: adxValue.plusDi,
+      minusDi: adxValue.minusDi,
+      atrPct: price > 0 ? (atrNow / price) * 100 : 0,
+      volumeRatio,
+      bbWidth,
+      donchianPos,
+    },
     overlays: {
       ema20,
       ema50,
@@ -1588,7 +2186,8 @@ function compositeAnalysis() {
   const score = Math.round(selected.score * 0.78 + chain.score * 0.22);
   const bias = score >= 62 ? "bullish" : score <= 38 ? "bearish" : "neutral";
   const text = bias === "bullish" ? "상승 우위" : bias === "bearish" ? "하락 우위" : "중립/관망";
-  const scenarios = selected.tradeScenarios || [selected.tradePlan].filter(Boolean);
+  const baseScenarios = selected.tradeScenarios || [selected.tradePlan].filter(Boolean);
+  const scenarios = applyRecommendationModelToScenarios(baseScenarios, { ...selected, score, bias, text, chain }, chain);
   const selectedIndex = clamp(state.selectedScenarioIndex, 0, Math.max(0, scenarios.length - 1));
   state.selectedScenarioIndex = selectedIndex;
   const tradePlan = scenarios[selectedIndex] || selected.tradePlan;
@@ -1937,6 +2536,9 @@ function buildTradeSnapshot({ bot, analysis, plan, entry, reason }) {
       invalidation: plan?.invalidation || null,
       rr: plan?.rr || 0,
       formulaScore: plan?.formulaScore || 0,
+      recommendationScore: plan?.recommendationScore || 0,
+      estimatedWinRate: plan?.estimatedWinRate || 0,
+      grade: plan?.grade || "",
       validationPass: Boolean(plan?.validationPass),
       confluence: plan?.confluence?.labels || [],
     },
@@ -1947,6 +2549,8 @@ function buildTradeSnapshot({ bot, analysis, plan, entry, reason }) {
       expectancyR: validation.expectancyR || 0,
       profitFactor: validation.profitFactor || 0,
       avgBarsHeld: validation.avgBarsHeld || 0,
+      avgAdverseR: validation.avgAdverseR || 0,
+      maxAdverseR: validation.maxAdverseR || 0,
       quality: validation.quality || "unknown",
     },
     backtest: {
@@ -1955,6 +2559,8 @@ function buildTradeSnapshot({ bot, analysis, plan, entry, reason }) {
       expectancyR: backtest.expectancyR || 0,
       profitFactor: backtest.profitFactor || 0,
       avgBarsHeld: backtest.avgBarsHeld || 0,
+      avgAdverseR: backtest.avgAdverseR || 0,
+      maxAdverseR: backtest.maxAdverseR || 0,
       quality: backtest.quality || "unknown",
     },
     onchain: {
@@ -3113,6 +3719,352 @@ function renderOnchain() {
   `).join("");
 }
 
+function htmlSafe(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function gradeClass(grade) {
+  if (grade === "A+") return "grade-aplus";
+  if (grade === "A") return "grade-a";
+  if (grade === "B") return "grade-b";
+  return "grade-c";
+}
+
+function entryDisplay(plan) {
+  if (!plan) return "-";
+  if (plan.isCurrentEntry || plan.entryLow === plan.entryHigh) return fmtUsd.format(plan.entryHigh);
+  return `${fmtUsd.format(plan.entryLow)} - ${fmtUsd.format(plan.entryHigh)}`;
+}
+
+function buildTradeEvidence(analysis) {
+  const plan = analysis.tradePlan;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const backtest = plan.backtest || validation;
+  const reasons = plan.reasons?.length ? plan.reasons : [
+    `Validation win rate ${fmt.format(validation.winRate || 0)}% with ${fmtInt.format(validation.trades || 0)} samples`,
+    `Current indicator confidence ${analysis.confidence}%`,
+    `Entry range ${fmt.format(plan.entryRangePct || entryRangePct(plan, analysis.price))}%`,
+  ];
+  const risks = plan.risks?.length ? plan.risks : ["No high-probability risk filter has enough evidence yet."];
+  return [
+    {
+      label: "Recommendation grade",
+      detail: `${plan.grade || "C"} / simulated win ${fmt.format(plan.estimatedWinRate || validation.winRate || 0)}% / confidence ${analysis.confidence}%`,
+      type: plan.highProbability ? "positive" : plan.grade === "B" ? "neutral" : "negative",
+    },
+    {
+      label: "1Y validation",
+      detail: `${fmtInt.format(validation.trades || 0)} samples / win ${fmt.format(validation.winRate || 0)}% / expectancy ${fmt.format(validation.expectancyR || 0)}R / PF ${fmt.format(validation.profitFactor || 0)} / avg MAE ${fmt.format(validation.avgAdverseR || 0)}R`,
+      type: plan.validationPass ? "positive" : (validation.trades || 0) >= 12 ? "neutral" : "negative",
+    },
+    {
+      label: "Similar pattern backtest",
+      detail: `${fmtInt.format(backtest.trades || 0)} samples / win ${fmt.format(backtest.winRate || 0)}% / expectancy ${fmt.format(backtest.expectancyR || 0)}R / PF ${fmt.format(backtest.profitFactor || 0)}`,
+      type: (backtest.expectancyR || 0) > 0 && (backtest.winRate || 0) >= 50 ? "positive" : "neutral",
+    },
+    {
+      label: "Entry range",
+      detail: `${entryDisplay(plan)} / width ${fmt.format(plan.entryRangePct || entryRangePct(plan, analysis.price))}% / ${plan.entryRangeStatus || "controlled"}`,
+      type: plan.entryRangeWide ? "negative" : "positive",
+    },
+    {
+      label: "Bot record adjustment",
+      detail: plan.botAdjustment?.note || "Bot record sample is still too small for this setup.",
+      type: (plan.botAdjustment?.adjustment || 0) > 0 ? "positive" : (plan.botAdjustment?.adjustment || 0) < 0 ? "negative" : "neutral",
+    },
+    {
+      label: "On-chain context",
+      detail: `${analysis.chain?.score ?? 50}/100 - ${(analysis.chain?.notes || []).slice(0, 2).join(" / ") || "public on-chain context pending"}`,
+      type: (analysis.chain?.score || 50) >= 56 ? "positive" : (analysis.chain?.score || 50) <= 44 ? "negative" : "neutral",
+    },
+    {
+      label: "Why this recommendation",
+      detail: reasons.join(" | "),
+      type: plan.highProbability ? "positive" : "neutral",
+      details: reasons,
+    },
+    {
+      label: "Entry avoidance risks",
+      detail: risks.join(" | "),
+      type: risks.length && !plan.highProbability ? "negative" : "neutral",
+      details: risks,
+    },
+  ];
+}
+
+function buildExecutionChecklist(analysis, risk) {
+  const plan = analysis.tradePlan;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const inEntryZone = analysis.price >= plan.entryLow && analysis.price <= plan.entryHigh;
+  const risks = plan.risks?.length ? plan.risks : [];
+  return [
+    {
+      label: "High-probability gate",
+      detail: plan.highProbability ? "A/A+ gate passed: validation, trend agreement, and entry range are aligned." : "Gate did not pass. Treat this as wait-first simulation, not an aggressive entry.",
+      status: plan.highProbability ? "PASS" : "WAIT",
+      type: plan.highProbability ? "positive" : "negative",
+    },
+    {
+      label: "Entry trigger",
+      detail: inEntryZone ? "Current price is inside the planned entry range." : "Wait until price enters the planned entry range or forms a tighter retest.",
+      status: inEntryZone ? "IN RANGE" : "WAIT",
+      type: inEntryZone ? "positive" : "neutral",
+    },
+    {
+      label: "Validation sample",
+      detail: `${fmtInt.format(validation.trades || 0)} samples. Minimum ${RECOMMENDATION_MIN_SAMPLE}, strong ${RECOMMENDATION_STRONG_SAMPLE}.`,
+      status: (validation.trades || 0) >= RECOMMENDATION_MIN_SAMPLE ? "OK" : "THIN",
+      type: (validation.trades || 0) >= RECOMMENDATION_MIN_SAMPLE ? "positive" : "negative",
+    },
+    {
+      label: "Entry width",
+      detail: `${fmt.format(plan.entryRangePct || entryRangePct(plan, analysis.price))}% width. ${plan.entryRangeStatus || "Controlled"}.`,
+      status: plan.entryRangeWide ? "WIDE" : "OK",
+      type: plan.entryRangeWide ? "negative" : "positive",
+    },
+    {
+      label: "Cost-adjusted R/R",
+      detail: `Fee/slippage adjusted R/R is 1 : ${fmt.format(risk.netRr)}.`,
+      status: risk.netRr >= 1.05 ? "OK" : "LOW",
+      type: risk.netRr >= 1.05 ? "positive" : "negative",
+    },
+    {
+      label: "Main risk",
+      detail: risks[0] || "No major avoidance risk detected by the current simulation filters.",
+      status: risks.length ? "CHECK" : "CLEAR",
+      type: risks.length ? "negative" : "positive",
+    },
+  ];
+}
+
+function renderAutoLevels(analysis) {
+  clearAutoLines();
+  if (!state.levelsVisible) return;
+  const plan = analysis.tradePlan;
+  if (!plan) return;
+  const gradeTag = plan.grade ? ` ${plan.grade}` : "";
+  const scoreTag = Number.isFinite(plan.recommendationScore)
+    ? ` S${Math.round(plan.recommendationScore)}`
+    : Number.isFinite(plan.formulaScore) ? ` S${Math.round(plan.formulaScore)}` : "";
+
+  addAutoLine(analysis.support, `Support${gradeTag}`, "#35d08f", 2);
+  addAutoLine(analysis.resistance, `Resistance${gradeTag}`, "#ff5f6d", 2);
+  if (plan.isCurrentEntry || plan.entryLow === plan.entryHigh) {
+    addAutoLine(plan.entryHigh, `Entry${gradeTag}${scoreTag}`, "#5ac8fa", 0);
+  } else {
+    addAutoLine(plan.entryLow, `Entry L${gradeTag}${scoreTag}`, "#5ac8fa", 1);
+    addAutoLine(plan.entryHigh, `Entry H${gradeTag}${scoreTag}`, "#5ac8fa", 1);
+  }
+  addAutoLine(plan.takeProfit1, `TP1${gradeTag}`, "#f4bd50", 1);
+  addAutoLine(plan.takeProfit2, "TP2", "#f4bd50", 2);
+  addAutoLine(plan.takeProfit3, "TP3", "#f4bd50", 2);
+  addAutoLine(plan.stopLoss, `SL${gradeTag}`, "#ff5f6d", 0);
+  if (plan.breakoutLong) addAutoLine(plan.breakoutLong, "Breakout trigger", "#7aa7ff", 1);
+  if (plan.breakdownShort) addAutoLine(plan.breakdownShort, "Breakdown trigger", "#a78bfa", 1);
+}
+
+function renderSummary() {
+  const analysis = getDisplayAnalysis();
+  if (!analysis) return;
+  const plan = analysis.tradePlan;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const backtest = plan.backtest || validation;
+  const grade = plan.grade || "C";
+
+  els.signalBadge.textContent = `${grade} ${plan.highProbability ? "Candidate" : "Wait"}`;
+  els.signalBadge.className = `badge ${analysis.bias}`;
+  els.signalText.textContent = analysis.text;
+  els.scoreText.textContent = `Recommendation ${Math.round(plan.recommendationScore || plan.formulaScore || analysis.score)} / 100`;
+  els.meterFill.style.width = `${clamp(plan.recommendationScore || analysis.score, 0, 100)}%`;
+  els.meterFill.style.background = plan.highProbability ? "var(--green)" : grade === "B" ? "var(--amber)" : "var(--red)";
+  els.priceText.textContent = fmtUsd.format(analysis.price);
+  els.changeText.textContent = `24h ${analysis.change24h >= 0 ? "+" : ""}${fmt.format(analysis.change24h)}%`;
+  els.changeText.className = `change ${analysis.change24h > 0 ? "positive" : analysis.change24h < 0 ? "negative" : "neutral"}`;
+  els.activeIntervalText.textContent = INTERVALS.find((item) => item.key === state.interval).label;
+  els.updatedAt.textContent = new Date().toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
+  els.rangeText.textContent = `${state.candlesByInterval[state.interval]?.length || 0} ${state.interval} candles / live update keeps chart position`;
+  els.resistanceText.textContent = fmtUsd.format(analysis.resistance);
+  els.supportText.textContent = fmtUsd.format(analysis.support);
+  els.atrText.textContent = fmtUsd.format(analysis.atr);
+  els.kpiEntryText.textContent = entryDisplay(plan);
+  els.kpiTp1Text.textContent = fmtUsd.format(plan.takeProfit1);
+  els.kpiStopText.textContent = fmtUsd.format(plan.stopLoss);
+  els.kpiSupportText.textContent = fmtUsd.format(analysis.support);
+  els.kpiResistanceText.textContent = fmtUsd.format(analysis.resistance);
+
+  const lockedText = analysis.entryLocked
+    ? ` Current entry is locked from ${new Date(analysis.entryCapturedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`
+    : "";
+  const modeText = state.scenarioMode === "recommended" && !analysis.entryLocked
+    ? ` ${INTERVALS.find((item) => item.key === state.interval).label} recommended scenario is displayed on the chart.`
+    : "";
+  els.signalReason.textContent = `This is a probability simulation, not investment advice. Grade ${grade}, estimated win ${fmt.format(plan.estimatedWinRate || validation.winRate || 0)}%, confidence ${analysis.confidence}%, 1Y validation ${fmt.format(validation.winRate || 0)}% / ${fmt.format(validation.expectancyR || 0)}R / PF ${fmt.format(validation.profitFactor || 0)}, similar pattern ${fmt.format(backtest.winRate || 0)}%. ${plan.highProbability ? "A/A+ gate passed." : "High-probability gate did not pass; waiting is preferred."}${lockedText}${modeText}`;
+}
+
+function renderTradePlan() {
+  const analysis = getDisplayAnalysis();
+  if (!analysis?.tradePlan) return;
+  const plan = analysis.tradePlan;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const backtest = plan.backtest || validation;
+  const risk = calculateRisk(analysis);
+  const evidence = buildTradeEvidence(analysis);
+  const checklist = buildExecutionChecklist(analysis, risk);
+  const badgeType = plan.side === "long" ? "bullish" : plan.side === "short" ? "bearish" : "neutral";
+  const grade = plan.grade || "C";
+
+  els.tradeSideBadge.textContent = `${grade} ${plan.highProbability ? "Candidate" : "Wait"}`;
+  els.tradeSideBadge.className = `badge ${badgeType} recommendation-grade ${gradeClass(grade)}`;
+  els.tradeSummary.innerHTML = `
+    <strong>${htmlSafe(plan.title || "Scenario")}</strong>
+    <span>${htmlSafe(plan.summary || "")}</span>
+    <span>Entry ${entryDisplay(plan)} / TP1 ${fmtUsd.format(plan.takeProfit1)} / SL ${fmtUsd.format(plan.stopLoss)} / support ${fmtUsd.format(analysis.support)} / resistance ${fmtUsd.format(analysis.resistance)}</span>
+    <span>${plan.highProbability ? "A/A+ high-probability simulation candidate." : "Conditions are not strong enough; wait-first simulation is preferred."}</span>
+  `;
+
+  els.tradeEvidenceList.innerHTML = evidence.map((item) => `
+    <li class="${item.details ? "evidence-expand" : ""}">
+      ${item.details ? `
+        <details>
+          <summary><strong class="${item.type}">${htmlSafe(item.label)}</strong><span>${htmlSafe(item.detail)}</span></summary>
+          <ul>${item.details.map((detail) => `<li>${htmlSafe(detail)}</li>`).join("")}</ul>
+        </details>
+      ` : `
+        <strong class="${item.type}">${htmlSafe(item.label)}</strong>
+        <span>${htmlSafe(item.detail)}</span>
+      `}
+    </li>
+  `).join("");
+
+  const rows = [
+    ["Grade", grade, grade === "A+" || grade === "A" ? "positive" : grade === "B" ? "neutral" : "negative"],
+    ["Estimated win", `${fmt.format(plan.estimatedWinRate || validation.winRate || 0)}%`, (plan.estimatedWinRate || 0) >= 55 ? "positive" : "neutral"],
+    ["Confidence", `${analysis.confidence}%`, analysis.confidence >= 55 ? "positive" : "neutral"],
+    ["Entry range", `${entryDisplay(plan)} (${fmt.format(plan.entryRangePct || entryRangePct(plan, analysis.price))}%)`, plan.entryRangeWide ? "negative" : "positive"],
+    ["TP / SL", `${fmtUsd.format(plan.takeProfit1)} / ${fmtUsd.format(plan.stopLoss)}`, "neutral"],
+    ["Support / Resistance", `${fmtUsd.format(analysis.support)} / ${fmtUsd.format(analysis.resistance)}`, "neutral"],
+    ["1Y sample", fmtInt.format(validation.trades || 0), (validation.trades || 0) >= RECOMMENDATION_MIN_SAMPLE ? "positive" : "negative"],
+    ["1Y win", `${fmt.format(validation.winRate || 0)}%`, (validation.winRate || 0) >= 55 ? "positive" : "neutral"],
+    ["1Y PF", fmt.format(validation.profitFactor || 0), (validation.profitFactor || 0) >= 1.1 ? "positive" : "negative"],
+    ["Expectancy", `${fmt.format(validation.expectancyR || 0)}R`, (validation.expectancyR || 0) > 0 ? "positive" : "negative"],
+    ["Avg MAE", `${fmt.format(validation.avgAdverseR || 0)}R`, (validation.avgAdverseR || 0) <= 0.9 ? "positive" : "neutral"],
+    ["Similar win", `${fmt.format(backtest.winRate || 0)}%`, (backtest.winRate || 0) >= 50 ? "positive" : "neutral"],
+  ];
+
+  if (plan.rr > 0) rows.push(["R/R", `1 : ${fmt.format(plan.rr)}`, "neutral"]);
+  if (plan.botAdjustment?.matches) rows.push(["Bot match", `${fmtInt.format(plan.botAdjustment.matches)} / ${fmt.format(plan.botAdjustment.avgR)}R`, plan.botAdjustment.adjustment > 0 ? "positive" : "negative"]);
+
+  els.tradePlanList.innerHTML = rows.map(([label, value, type]) => `
+    <div class="trade-row">
+      <span>${htmlSafe(label)}</span>
+      <strong class="${type}">${htmlSafe(value)}</strong>
+    </div>
+  `).join("");
+
+  els.executionChecklist.innerHTML = checklist.map((item) => `
+    <li>
+      <strong class="${item.type}">${htmlSafe(item.status)}</strong>
+      <span>${htmlSafe(item.label)}<small>${htmlSafe(item.detail)}</small></span>
+    </li>
+  `).join("");
+}
+
+function renderPredictions() {
+  els.predictionGrid.innerHTML = INTERVALS.map((interval) => {
+    const analysis = state.analyses[interval.key];
+    if (!analysis) {
+      return `<article class="prediction-card" data-interval-card="${interval.key}"><h3>${interval.label}</h3><strong>-</strong><p>Waiting for analysis</p></article>`;
+    }
+    const validation = analysis.tradePlan?.validationBacktest || analysis.tradePlan?.backtest || {};
+    const grade = validationPasses(validation) ? "A" : (validation.trades || 0) >= 12 ? "B" : "C";
+    return `
+      <article class="prediction-card ${state.interval === interval.key ? "is-active" : ""}" data-interval-card="${interval.key}">
+        <h3>${interval.label} forecast</h3>
+        <strong class="${analysis.bias === "bullish" ? "positive" : analysis.bias === "bearish" ? "negative" : "neutral"}">${htmlSafe(analysis.text)}</strong>
+        <span>Grade ${grade} / score ${analysis.score}/100 / confidence ${analysis.confidence}% / 1Y win ${fmt.format(validation.winRate || 0)}%</span>
+        <p>Simulation center ${fmtUsd.format(analysis.target)}<br />Range ${fmtUsd.format(analysis.rangeLow)} - ${fmtUsd.format(analysis.rangeHigh)}</p>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderScenarioButtons() {
+  const analysis = compositeAnalysis();
+  if (!analysis?.tradeScenarios?.length || state.scenarioMode === "current-entry") {
+    if (els.scenarioButtons) els.scenarioButtons.innerHTML = "";
+    return;
+  }
+
+  els.scenarioButtons.innerHTML = analysis.tradeScenarios.slice(0, 3).map((plan, index) => `
+    <button
+      class="scenario-chip ${index === analysis.selectedScenarioIndex ? "is-active" : ""} ${gradeClass(plan.grade)}"
+      type="button"
+      data-scenario-index="${index}"
+      aria-pressed="${index === analysis.selectedScenarioIndex ? "true" : "false"}"
+    >
+      <span>${htmlSafe(plan.scenarioLabel || `Scenario ${index + 1}`)} · ${htmlSafe(plan.grade || "C")}</span>
+      <small>${htmlSafe(plan.scenarioName || "Setup")} · win ${fmt.format(plan.estimatedWinRate || plan.validationBacktest?.winRate || 0)}% · S${Math.round(plan.recommendationScore || plan.formulaScore || 0)}</small>
+    </button>
+  `).join("");
+}
+
+function renderReport() {
+  const composite = getDisplayAnalysis();
+  if (!composite) return;
+
+  const intervalScores = INTERVALS
+    .map((interval) => {
+      const score = state.analyses[interval.key]?.score;
+      return `<span><b>${interval.label}</b>${score ?? "-"}</span>`;
+    })
+    .join("");
+  const plan = composite.tradePlan;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const risks = plan.risks?.length ? plan.risks.map((risk) => `<li>${htmlSafe(risk)}</li>`).join("") : "<li>No major avoidance risk detected.</li>";
+  const reasons = plan.reasons?.length ? plan.reasons.map((reason) => `<li>${htmlSafe(reason)}</li>`).join("") : "<li>Waiting for stronger validation evidence.</li>";
+
+  els.reportText.innerHTML = `
+    <div class="report-brief recommendation-report ${gradeClass(plan.grade)}">
+      <span class="report-chip">${htmlSafe(INTERVALS.find((item) => item.key === state.interval)?.label || state.interval)} / Grade ${htmlSafe(plan.grade || "C")}</span>
+      <strong>${plan.highProbability ? "High-probability simulation candidate" : "Wait-first probability simulation"}</strong>
+      <small>Estimated win ${fmt.format(plan.estimatedWinRate || validation.winRate || 0)}% / confidence ${composite.confidence}% / recommendation score ${Math.round(plan.recommendationScore || 0)}/100</small>
+    </div>
+    <div class="report-score-strip" aria-label="timeframe score map">
+      ${intervalScores}
+    </div>
+    <div class="report-matrix">
+      <section>
+        <span>Trade levels</span>
+        <strong>${htmlSafe(plan.title || "Scenario")}</strong>
+        <dl>
+          <div><dt>Entry</dt><dd>${entryDisplay(plan)}</dd></div>
+          <div><dt>TP1</dt><dd>${fmtUsd.format(plan.takeProfit1)}</dd></div>
+          <div><dt>SL</dt><dd>${fmtUsd.format(plan.stopLoss)}</dd></div>
+        </dl>
+      </section>
+      <section>
+        <span>1Y validation</span>
+        <strong>${plan.validationPass ? "Gate passed" : "Needs caution"}</strong>
+        <dl>
+          <div><dt>Win</dt><dd>${fmt.format(validation.winRate || 0)}%</dd></div>
+          <div><dt>Expectancy</dt><dd>${fmt.format(validation.expectancyR || 0)}R</dd></div>
+          <div><dt>PF</dt><dd>${fmt.format(validation.profitFactor || 0)}</dd></div>
+        </dl>
+      </section>
+    </div>
+    <div class="report-evidence">
+      <section><span>Why it ranked here</span><ul>${reasons}</ul></section>
+      <section><span>Risks that block higher grade</span><ul>${risks}</ul></section>
+      <section><span>On-chain context</span><p>${htmlSafe((composite.chain.notes || []).slice(0, 3).join(" / ") || "Public on-chain data pending.")}</p></section>
+    </div>
+  `;
+}
+
 function renderReport() {
   const composite = getDisplayAnalysis();
   if (!composite) return;
@@ -3185,6 +4137,58 @@ function renderReport() {
   `;
 }
 
+function renderReport() {
+  const composite = getDisplayAnalysis();
+  if (!composite) return;
+
+  const intervalScores = INTERVALS
+    .map((interval) => {
+      const score = state.analyses[interval.key]?.score;
+      return `<span><b>${interval.label}</b>${score ?? "-"}</span>`;
+    })
+    .join("");
+  const plan = composite.tradePlan;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const risks = plan.risks?.length ? plan.risks.map((risk) => `<li>${htmlSafe(risk)}</li>`).join("") : "<li>No major avoidance risk detected.</li>";
+  const reasons = plan.reasons?.length ? plan.reasons.map((reason) => `<li>${htmlSafe(reason)}</li>`).join("") : "<li>Waiting for stronger validation evidence.</li>";
+
+  els.reportText.innerHTML = `
+    <div class="report-brief recommendation-report ${gradeClass(plan.grade)}">
+      <span class="report-chip">${htmlSafe(INTERVALS.find((item) => item.key === state.interval)?.label || state.interval)} / Grade ${htmlSafe(plan.grade || "C")}</span>
+      <strong>${plan.highProbability ? "High-probability simulation candidate" : "Wait-first probability simulation"}</strong>
+      <small>Estimated win ${fmt.format(plan.estimatedWinRate || validation.winRate || 0)}% / confidence ${composite.confidence}% / recommendation score ${Math.round(plan.recommendationScore || 0)}/100</small>
+    </div>
+    <div class="report-score-strip" aria-label="timeframe score map">
+      ${intervalScores}
+    </div>
+    <div class="report-matrix">
+      <section>
+        <span>Trade levels</span>
+        <strong>${htmlSafe(plan.title || "Scenario")}</strong>
+        <dl>
+          <div><dt>Entry</dt><dd>${entryDisplay(plan)}</dd></div>
+          <div><dt>TP1</dt><dd>${fmtUsd.format(plan.takeProfit1)}</dd></div>
+          <div><dt>SL</dt><dd>${fmtUsd.format(plan.stopLoss)}</dd></div>
+        </dl>
+      </section>
+      <section>
+        <span>1Y validation</span>
+        <strong>${plan.validationPass ? "Gate passed" : "Needs caution"}</strong>
+        <dl>
+          <div><dt>Win</dt><dd>${fmt.format(validation.winRate || 0)}%</dd></div>
+          <div><dt>Expectancy</dt><dd>${fmt.format(validation.expectancyR || 0)}R</dd></div>
+          <div><dt>PF</dt><dd>${fmt.format(validation.profitFactor || 0)}</dd></div>
+        </dl>
+      </section>
+    </div>
+    <div class="report-evidence">
+      <section><span>Why it ranked here</span><ul>${reasons}</ul></section>
+      <section><span>Risks that block higher grade</span><ul>${risks}</ul></section>
+      <section><span>On-chain context</span><p>${htmlSafe((composite.chain.notes || []).slice(0, 3).join(" / ") || "Public on-chain data pending.")}</p></section>
+    </div>
+  `;
+}
+
 function renderAll() {
   renderSummary();
   renderChart();
@@ -3219,7 +4223,9 @@ function startSocket() {
     else candles.push(candle);
     const intervalLimit = INTERVALS.find((item) => item.key === state.interval)?.limit || 1000;
     state.candlesByInterval[state.interval] = candles.slice(-intervalLimit);
-    state.analyses[state.interval] = analyzeCandlesV2(state.candlesByInterval[state.interval], state.interval);
+    const validationIntervalKey = validationIntervalFor(state.interval);
+    const validationCandles = state.validationCandlesByInterval[validationIntervalKey] || state.candlesByInterval[state.interval];
+    state.analyses[state.interval] = analyzeCandlesV2(state.candlesByInterval[state.interval], state.interval, validationCandles, validationIntervalKey);
     updateBotDeskOnCandle(candle, state.analyses[state.interval]);
     renderAll();
   };

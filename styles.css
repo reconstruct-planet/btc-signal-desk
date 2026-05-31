@@ -4339,3 +4339,90 @@ body {
     height: 560px;
   }
 }
+
+.recommendation-grade {
+  box-shadow: 0 0 22px rgba(122, 167, 255, 0.22);
+}
+
+.grade-aplus,
+.grade-a {
+  border-color: rgba(61, 220, 151, 0.58) !important;
+  box-shadow: 0 0 28px rgba(61, 220, 151, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.grade-b {
+  border-color: rgba(244, 189, 80, 0.52) !important;
+  box-shadow: 0 0 24px rgba(244, 189, 80, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.grade-c {
+  border-color: rgba(255, 95, 109, 0.46) !important;
+  box-shadow: 0 0 22px rgba(255, 95, 109, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.trade-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.trade-summary strong {
+  color: rgba(255, 255, 255, 0.96);
+  font-size: clamp(1.05rem, 1.9vw, 1.45rem);
+}
+
+.trade-summary span {
+  display: block;
+}
+
+.evidence-list .evidence-expand {
+  align-items: stretch;
+  display: block;
+}
+
+.evidence-expand details {
+  width: 100%;
+}
+
+.evidence-expand summary {
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+}
+
+.evidence-expand summary::-webkit-details-marker {
+  display: none;
+}
+
+.evidence-expand summary::after {
+  color: rgba(255, 255, 255, 0.46);
+  content: "Open detail";
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.evidence-expand details[open] summary::after {
+  content: "Close detail";
+}
+
+.evidence-expand ul {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.evidence-expand li {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: rgba(235, 241, 255, 0.78);
+  font-size: 0.82rem;
+  list-style: none;
+  padding: 8px 10px;
+}
+
+.recommendation-report {
+  border: 1px solid rgba(122, 167, 255, 0.22);
+  border-radius: 10px;
+  padding: 14px;
+}
