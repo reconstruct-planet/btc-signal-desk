@@ -4386,6 +4386,311 @@ els.timeframeBtns.forEach((item) => item.classList.toggle("is-active", item === 
   });
 }
 
+function parseSnapshotNumber(value) {
+  if (Number.isFinite(value)) return Number(value);
+  const parsed = Number(String(value ?? "").replace(/[^0-9.+-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatFeatureKey(key) {
+  return String(key || "")
+    .replaceAll(":", " ")
+    .replaceAll("indicator", "indicator")
+    .replaceAll("validation", "validation")
+    .replaceAll("confidence", "confidence")
+    .replaceAll("interval", "interval");
+}
+
+function tradeFeatureKeysFromSnapshot(snapshot) {
+  if (!snapshot) return [];
+  const market = snapshot.market || {};
+  const scenario = snapshot.scenario || {};
+  const validation = snapshot.validation || {};
+  const onchain = snapshot.onchain || {};
+  const price = Number(market.price) || Number(scenario.entry) || 0;
+  const ema20 = Number(market.ema20);
+  const ema50 = Number(market.ema50);
+  const ema200 = Number(market.ema200);
+  const vwap = Number(market.vwap);
+  const rsi = parseSnapshotNumber(market.rsi);
+  const supportGap = price > 0 && Number.isFinite(Number(market.support)) ? ((price - Number(market.support)) / price) * 100 : null;
+  const resistanceGap = price > 0 && Number.isFinite(Number(market.resistance)) ? ((Number(market.resistance) - price) / price) * 100 : null;
+  const rr = Number(scenario.rr) || 0;
+  const entryWidthPct = price > 0 ? Math.abs((Number(scenario.entryHigh) || price) - (Number(scenario.entryLow) || price)) / price * 100 : 0;
+
+  const keys = [
+    `interval:${market.interval || "unknown"}`,
+    `side:${scenario.side || "neutral"}`,
+    `bias:${market.bias || "neutral"}`,
+    `confidence:${bucketNumber(market.confidence, 48, 68)}`,
+    `score:${bucketNumber(market.compositeScore, 45, 68)}`,
+    `onchain:${bucketNumber(onchain.score, 45, 58)}`,
+    `atr:${bucketNumber(market.atrPct, 0.35, 1.6)}`,
+    `rr:${bucketNumber(rr, 1.05, 1.65)}`,
+    `entryWidth:${bucketNumber(entryWidthPct, 0.12, 0.42)}`,
+    `validation:${validation.trades >= 24 && validation.winRate >= 55 && validation.expectancyR > 0 ? "strong" : validation.trades >= 12 ? "mixed" : "thin"}`,
+  ];
+
+  if (scenario.grade) keys.push(`grade:${scenario.grade}`);
+  if (Number.isFinite(ema20) && Number.isFinite(ema50) && Number.isFinite(ema200)) {
+    keys.push(`emaStack:${ema20 >= ema50 && ema50 >= ema200 ? "bull" : ema20 <= ema50 && ema50 <= ema200 ? "bear" : "mixed"}`);
+  }
+  if (price > 0 && Number.isFinite(vwap)) keys.push(`vwap:${price >= vwap ? "above" : "below"}`);
+  if (Number.isFinite(rsi)) keys.push(`rsi:${bucketNumber(rsi, 42, 64)}`);
+  if (Number.isFinite(supportGap)) keys.push(`supportGap:${bucketNumber(supportGap, 0.28, 1.2)}`);
+  if (Number.isFinite(resistanceGap)) keys.push(`resistanceGap:${bucketNumber(resistanceGap, 0.28, 1.2)}`);
+
+  (snapshot.indicators || [])
+    .filter((item) => Math.abs(Number(item.signal) || 0) >= 0.7)
+    .slice(0, 7)
+    .forEach((item) => keys.push(`indicator:${item.name}:${item.signal > 0 ? "up" : "down"}`));
+
+  return [...new Set(keys)];
+}
+
+function summarizeBotPerformance(bot) {
+  const closed = (bot.history || []).map(normalizeBotTradeRecord);
+  const wins = closed.filter((trade) => trade.pnl >= 0).length;
+  const totalPnl = closed.reduce((sum, trade) => sum + trade.pnl, 0);
+  const totalR = closed.reduce((sum, trade) => sum + trade.rMultiple, 0);
+  const targetCount = closed.filter((trade) => trade.exitReason === "target").length;
+  const stopCount = closed.filter((trade) => trade.exitReason === "stop").length;
+  const recent = closed.slice(-BOT_RECENT_WINDOW);
+  const recentR = recent.reduce((sum, trade) => sum + trade.rMultiple, 0);
+  const featureMap = new Map();
+  const sideMap = new Map();
+  const intervalMap = new Map();
+
+  const addStats = (map, key, trade) => {
+    const item = map.get(key) || { key, trades: 0, wins: 0, stops: 0, targets: 0, totalR: 0, pnl: 0 };
+    item.trades += 1;
+    if (trade.pnl >= 0) item.wins += 1;
+    if (trade.exitReason === "stop") item.stops += 1;
+    if (trade.exitReason === "target") item.targets += 1;
+    item.totalR += trade.rMultiple;
+    item.pnl += trade.pnl;
+    map.set(key, item);
+  };
+
+  closed.forEach((trade) => {
+    addStats(sideMap, trade.side || "unknown", trade);
+    addStats(intervalMap, trade.interval || trade.snapshot?.market?.interval || "unknown", trade);
+    tradeFeatureKeysFromSnapshot(trade.snapshot).forEach((key) => addStats(featureMap, key, trade));
+  });
+
+  const enrich = (item) => ({
+    ...item,
+    winRate: item.trades ? (item.wins / item.trades) * 100 : 0,
+    stopRate: item.trades ? (item.stops / item.trades) * 100 : 0,
+    targetRate: item.trades ? (item.targets / item.trades) * 100 : 0,
+    avgR: item.trades ? item.totalR / item.trades : 0,
+  });
+  const edges = [...featureMap.values()].map(enrich);
+  const bySide = [...sideMap.values()].map(enrich).sort((a, b) => b.avgR - a.avgR);
+  const byInterval = [...intervalMap.values()].map(enrich).sort((a, b) => b.avgR - a.avgR);
+  const strongEdges = edges
+    .filter((item) => item.trades >= BOT_LEARNING_MIN_TRADES && (item.avgR > 0.08 || item.winRate >= 58 || item.targetRate > item.stopRate + 18))
+    .sort((a, b) => b.avgR - a.avgR || b.winRate - a.winRate)
+    .slice(0, 6);
+  const weakEdges = edges
+    .filter((item) => item.trades >= BOT_LEARNING_MIN_TRADES && (item.avgR < -0.06 || item.stopRate >= 58))
+    .sort((a, b) => a.avgR - b.avgR || b.stopRate - a.stopRate)
+    .slice(0, 6);
+  const blockedEdges = weakEdges
+    .filter((item) => item.avgR < -0.16 || item.stopRate >= 66)
+    .slice(0, 4);
+  const recentAvgR = recent.length ? recentR / recent.length : 0;
+  const recentStopRate = recent.length ? (recent.filter((trade) => trade.exitReason === "stop").length / recent.length) * 100 : 0;
+  const recentSlump = recent.length >= 4 && (recentAvgR < -0.14 || recentStopRate >= 62);
+
+  return {
+    trades: closed.length,
+    wins,
+    losses: closed.length - wins,
+    winRate: closed.length ? (wins / closed.length) * 100 : 0,
+    totalPnl,
+    avgR: closed.length ? totalR / closed.length : 0,
+    targetRate: closed.length ? (targetCount / closed.length) * 100 : 0,
+    stopRate: closed.length ? (stopCount / closed.length) * 100 : 0,
+    recentTrades: recent.length,
+    recentAvgR,
+    recentStopRate,
+    recentSlump,
+    strongEdges,
+    weakEdges,
+    blockedEdges,
+    bySide,
+    byInterval,
+  };
+}
+
+function botLearningProfile(bot) {
+  const performance = summarizeBotPerformance(bot);
+  if (performance.trades < BOT_LEARNING_MIN_TRADES) {
+    return {
+      ...performance,
+      ready: false,
+      mode: "collecting",
+      summary: `Learning pending: ${performance.trades}/${BOT_LEARNING_MIN_TRADES} closed trades. The bot keeps using its base profile until enough records exist.`,
+    };
+  }
+
+  const best = performance.strongEdges[0];
+  const worst = performance.weakEdges[0];
+  const bestSegment = performance.byInterval[0] || performance.bySide[0];
+  const mode = performance.recentSlump ? "defensive" : best ? "focused" : "balanced";
+  const modeText = mode === "defensive"
+    ? "Defensive mode: recent stops or negative R are lowering entries in similar conditions."
+    : mode === "focused"
+      ? "Focused mode: the bot is favoring conditions that produced stronger R multiples."
+      : "Balanced mode: no dominant edge yet, so base strategy still carries more weight.";
+  const edgeText = best ? `Boost: ${formatFeatureKey(best.key)} (${fmt.format(best.avgR)}R / ${fmt.format(best.winRate)}%).` : "Boost: still collecting reliable positive patterns.";
+  const avoidText = worst ? `Avoid: ${formatFeatureKey(worst.key)} (${fmt.format(worst.avgR)}R / stop ${fmt.format(worst.stopRate)}%).` : "Avoid: no repeated weak pattern yet.";
+  const segmentText = bestSegment ? `Best segment: ${formatFeatureKey(bestSegment.key)} (${fmt.format(bestSegment.avgR)}R).` : "";
+
+  return {
+    ...performance,
+    ready: true,
+    mode,
+    summary: `${modeText} ${edgeText} ${avoidText} ${segmentText}`,
+  };
+}
+
+function botStrategyLabel(strategy) {
+  if (strategy === "winrate") return "Win-rate first";
+  if (strategy === "expectancy") return "Expectancy balance";
+  if (strategy === "rr") return "R/R breakout";
+  return "Scenario";
+}
+
+function botProfileLabel(bot) {
+  const labels = {
+    alpha: "Stable bot: prioritizes win rate, validation pass, and weak-condition avoidance.",
+    beta: "Balanced bot: weighs win rate, expectancy, and recent learned edges.",
+    gamma: "Aggressive bot: still likes R/R, but avoids repeated stop-heavy patterns.",
+    delta: "Scalping bot: prefers tight TP, tight range, and low-volatility winners.",
+    epsilon: "Trend bot: favors EMA/VWAP/ADX alignment proven in its own records.",
+    zeta: "Validation bot: prioritizes 1Y sample size, profit factor, and learned reliability.",
+  };
+  return labels[bot.id] || "Record-aware bot profile.";
+}
+
+function botLearningGate(bot, plan, analysis) {
+  const profile = botLearningProfile(bot);
+  if (!profile.ready) return { allowed: true, adjustment: 0, reasons: [] };
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry: tradeEntryReference(plan), reason: "gate-preview" });
+  const keys = new Set(tradeFeatureKeysFromSnapshot(snapshot));
+  const blocked = profile.blockedEdges.filter((edge) => keys.has(edge.key));
+  const weak = profile.weakEdges.filter((edge) => keys.has(edge.key));
+  const strong = profile.strongEdges.filter((edge) => keys.has(edge.key));
+  const reasons = [];
+  let adjustment = 0;
+
+  strong.forEach((edge) => {
+    adjustment += clamp(edge.avgR * 14 + (edge.winRate - 50) * 0.16 + (edge.targetRate - edge.stopRate) * 0.04, 2, 12);
+    reasons.push(`boost ${formatFeatureKey(edge.key)}`);
+  });
+  weak.forEach((edge) => {
+    adjustment -= clamp(Math.abs(edge.avgR) * 18 + Math.max(0, edge.stopRate - 45) * 0.12, 3, 18);
+    reasons.push(`penalty ${formatFeatureKey(edge.key)}`);
+  });
+  if (profile.recentSlump && !strong.length) {
+    adjustment -= 8;
+    reasons.push("recent defensive mode");
+  }
+  if (plan.grade === "A+" || plan.grade === "A") adjustment += 4;
+  if (plan.grade === "C") adjustment -= 7;
+
+  const hardBlocked = blocked.some((edge) => edge.avgR < -0.22 || edge.stopRate >= 70);
+  const allowed = !(hardBlocked && !strong.length) && !(profile.recentSlump && plan.grade === "C");
+  return {
+    allowed,
+    adjustment: clamp(adjustment, -42, 32),
+    reasons,
+    blocked,
+    weak,
+    strong,
+  };
+}
+
+function botLearningAdjustment(bot, plan, analysis) {
+  return botLearningGate(bot, plan, analysis).adjustment;
+}
+
+function pickBotScenario(analysis, bot) {
+  const scenarios = (analysis?.tradeScenarios || [analysis?.tradePlan].filter(Boolean)).slice(0, 3);
+  if (!scenarios.length) return null;
+  return scenarios
+    .map((plan) => {
+      const baseScore = botTradePlanKey(bot, plan);
+      const strategyScore = botStrategyScore(bot, plan, analysis);
+      const gate = botLearningGate(bot, plan, analysis);
+      const blockedPenalty = gate.allowed ? 0 : -999;
+      return {
+        plan,
+        score: baseScore + strategyScore + gate.adjustment + blockedPenalty,
+        strategyScore,
+        learningAdjustment: gate.adjustment,
+      };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.plan || scenarios[0];
+}
+
+function shouldOpenBotTrade(bot, analysis, plan) {
+  if (!plan) return false;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const gate = botLearningGate(bot, plan, analysis);
+  if (!gate.allowed) return false;
+
+  const nearEntry = Math.abs(analysis.price - tradeEntryReference(plan)) <= Math.max(analysis.atr * 0.28, analysis.price * 0.0012);
+  const inRange = analysis.price >= plan.entryLow && analysis.price <= plan.entryHigh;
+  const priceOk = inRange || nearEntry;
+  const confidenceFloor = bot.strategy === "rr" ? 44 : bot.strategy === "winrate" || bot.id === "zeta" ? 52 : 48;
+  const confidenceOk = analysis.confidence >= Math.max(42, confidenceFloor - Math.max(0, gate.adjustment) * 0.08);
+  const gradeOk = plan.grade !== "C" || (bot.id === "gamma" && validation.expectancyR > 0.18 && gate.adjustment >= 0);
+  const learnedOk = gate.adjustment > -18;
+
+  if (!priceOk || !confidenceOk || !gradeOk || !learnedOk) return false;
+
+  if (bot.strategy === "winrate") {
+    return plan.validationPass && validation.winRate >= 55 && validation.expectancyR > 0 && validation.profitFactor >= 1.08;
+  }
+  if (bot.strategy === "expectancy") {
+    return validation.expectancyR > 0.14 && validation.winRate >= 50 && validation.profitFactor >= 1.03;
+  }
+  if (bot.id === "delta") {
+    const entry = tradeEntryReference(plan);
+    const tpMovePct = entry > 0 ? Math.abs((plan.takeProfit1 || entry) - entry) / entry * 100 : 0;
+    return tpMovePct <= 0.9 && validation.winRate >= 49 && validation.expectancyR > 0;
+  }
+  if (bot.id === "epsilon") {
+    return validation.expectancyR > 0 && analysis.confidence >= 50 && (plan.grade === "A+" || plan.grade === "A" || gate.adjustment > 4);
+  }
+  if (bot.id === "zeta") {
+    return validation.trades >= RECOMMENDATION_MIN_SAMPLE && validation.profitFactor >= 1.1 && validation.winRate >= 53;
+  }
+  return (plan.rr || 0) >= 1.2 && validation.expectancyR > 0 && validation.winRate >= 48;
+}
+
+function renderLearningEdges(profile) {
+  const strong = profile.strongEdges?.length
+    ? profile.strongEdges.map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${fmt.format(edge.avgR)}R / ${fmt.format(edge.winRate)}%</strong></li>`).join("")
+    : `<li><span>Collecting positive patterns</span><strong>-</strong></li>`;
+  const weak = profile.weakEdges?.length
+    ? profile.weakEdges.map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${fmt.format(edge.avgR)}R / stop ${fmt.format(edge.stopRate)}%</strong></li>`).join("")
+    : `<li><span>No repeated weak pattern</span><strong>-</strong></li>`;
+  const segments = profile.byInterval?.length
+    ? profile.byInterval.slice(0, 3).map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${fmt.format(edge.avgR)}R / ${fmt.format(edge.winRate)}%</strong></li>`).join("")
+    : `<li><span>Segment data pending</span><strong>-</strong></li>`;
+  return `
+    <div class="learning-edge-grid">
+      <section><h4>Boost conditions</h4><ul>${strong}</ul></section>
+      <section><h4>Avoid conditions</h4><ul>${weak}</ul></section>
+      <section><h4>Best segments</h4><ul>${segments}</ul></section>
+    </div>
+  `;
+}
+
 function boot() {
   bindEvents();
   state.botDesk = loadBotDeskState();
