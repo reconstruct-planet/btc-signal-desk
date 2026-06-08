@@ -5060,6 +5060,553 @@ function renderTradeSnapshotDetails(trade) {
   `;
 }
 
+function scenarioKey(value) {
+  return String(value || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 36) || "unknown";
+}
+
+function edgeQualityKey(edge = {}) {
+  const trades = Number(edge.trades) || 0;
+  const winRate = Number(edge.winRate) || 0;
+  const expectancy = Number(edge.expectancyR) || 0;
+  const profitFactor = Number(edge.profitFactor) || 0;
+  if (trades < RECOMMENDATION_MIN_SAMPLE) return "thin";
+  if (expectancy < 0 || profitFactor < 1 || winRate < 49) return "negative";
+  if (winRate >= 55 && expectancy > 0.05 && profitFactor >= 1.1) return "strong";
+  return "mixed";
+}
+
+function botPlanValidationWeak(plan) {
+  const validation = plan?.validationBacktest || plan?.backtest || {};
+  const trades = Number(validation.trades) || 0;
+  if (trades < RECOMMENDATION_MIN_SAMPLE) return true;
+  return (Number(validation.expectancyR) || 0) < 0.02 || (Number(validation.profitFactor) || 0) < 1.05 || (Number(validation.winRate) || 0) < 50;
+}
+
+function tradeFeatureKeysFromSnapshot(snapshot) {
+  if (!snapshot) return [];
+  const market = snapshot.market || {};
+  const scenario = snapshot.scenario || {};
+  const validation = snapshot.validation || {};
+  const backtest = snapshot.backtest || {};
+  const onchain = snapshot.onchain || {};
+  const price = Number(market.price) || Number(scenario.entry) || 0;
+  const ema20 = Number(market.ema20);
+  const ema50 = Number(market.ema50);
+  const ema200 = Number(market.ema200);
+  const vwap = Number(market.vwap);
+  const rsi = parseSnapshotNumber(market.rsi);
+  const supportGap = price > 0 && Number.isFinite(Number(market.support)) ? ((price - Number(market.support)) / price) * 100 : null;
+  const resistanceGap = price > 0 && Number.isFinite(Number(market.resistance)) ? ((Number(market.resistance) - price) / price) * 100 : null;
+  const rr = Number(scenario.rr) || 0;
+  const entryWidthPct = price > 0 ? Math.abs((Number(scenario.entryHigh) || price) - (Number(scenario.entryLow) || price)) / price * 100 : 0;
+  const side = scenario.side || "neutral";
+  const bias = market.bias || "neutral";
+
+  const keys = [
+    `interval:${market.interval || "unknown"}`,
+    `side:${side}`,
+    `bias:${bias}`,
+    `sideBias:${side}-${bias}`,
+    `scenario:${scenarioKey(scenario.name || scenario.label || scenario.id)}`,
+    `confidence:${bucketNumber(market.confidence, 48, 68)}`,
+    `score:${bucketNumber(market.compositeScore, 45, 68)}`,
+    `onchain:${bucketNumber(onchain.score, 45, 58)}`,
+    `atr:${bucketNumber(market.atrPct, 0.35, 1.6)}`,
+    `rr:${bucketNumber(rr, 1.05, 1.65)}`,
+    `entryWidth:${bucketNumber(entryWidthPct, 0.12, 0.42)}`,
+    `validation:${edgeQualityKey(validation)}`,
+    `similar:${edgeQualityKey(backtest)}`,
+  ];
+
+  if (scenario.grade) keys.push(`grade:${scenario.grade}`);
+  if (Number.isFinite(ema20) && Number.isFinite(ema50) && Number.isFinite(ema200)) {
+    keys.push(`emaStack:${ema20 >= ema50 && ema50 >= ema200 ? "bull" : ema20 <= ema50 && ema50 <= ema200 ? "bear" : "mixed"}`);
+  }
+  if (price > 0 && Number.isFinite(vwap)) keys.push(`vwap:${price >= vwap ? "above" : "below"}`);
+  if (Number.isFinite(rsi)) keys.push(`rsi:${bucketNumber(rsi, 42, 64)}`);
+  if (Number.isFinite(supportGap)) keys.push(`supportGap:${bucketNumber(supportGap, 0.28, 1.2)}`);
+  if (Number.isFinite(resistanceGap)) keys.push(`resistanceGap:${bucketNumber(resistanceGap, 0.28, 1.2)}`);
+
+  (snapshot.indicators || [])
+    .filter((item) => Math.abs(Number(item.signal) || 0) >= 0.7)
+    .slice(0, 7)
+    .forEach((item) => keys.push(`indicator:${item.name}:${item.signal > 0 ? "up" : "down"}`));
+
+  return [...new Set(keys)];
+}
+
+function isBotLossTrade(trade) {
+  return (Number(trade.pnl) || 0) < 0 || (Number(trade.rMultiple) || 0) < 0 || trade.exitReason === "stop";
+}
+
+function summarizeBotPerformance(bot) {
+  const closed = (bot.history || []).map(normalizeBotTradeRecord);
+  const wins = closed.filter((trade) => trade.pnl >= 0).length;
+  const totalPnl = closed.reduce((sum, trade) => sum + trade.pnl, 0);
+  const totalR = closed.reduce((sum, trade) => sum + trade.rMultiple, 0);
+  const targetCount = closed.filter((trade) => trade.exitReason === "target").length;
+  const stopCount = closed.filter((trade) => trade.exitReason === "stop").length;
+  const recent = closed.slice(-BOT_RECENT_WINDOW);
+  const recentR = recent.reduce((sum, trade) => sum + trade.rMultiple, 0);
+  const featureMap = new Map();
+  const sideMap = new Map();
+  const intervalMap = new Map();
+  const lossMap = new Map();
+
+  const addStats = (map, key, trade) => {
+    const item = map.get(key) || { key, trades: 0, wins: 0, stops: 0, targets: 0, totalR: 0, pnl: 0 };
+    item.trades += 1;
+    if (trade.pnl >= 0) item.wins += 1;
+    if (trade.exitReason === "stop") item.stops += 1;
+    if (trade.exitReason === "target") item.targets += 1;
+    item.totalR += trade.rMultiple;
+    item.pnl += trade.pnl;
+    map.set(key, item);
+  };
+  const addLossStats = (key, trade) => {
+    const item = lossMap.get(key) || { key, losses: 0, stops: 0, largeLosses: 0, totalLossR: 0, pnl: 0 };
+    const lossR = Math.abs(Math.min(0, Number(trade.rMultiple) || 0));
+    item.losses += 1;
+    if (trade.exitReason === "stop") item.stops += 1;
+    if (trade.riskDiagnostics?.largeLoss || lossR >= 0.9) item.largeLosses += 1;
+    item.totalLossR += lossR;
+    item.pnl += Number(trade.pnl) || 0;
+    lossMap.set(key, item);
+  };
+
+  closed.forEach((trade) => {
+    addStats(sideMap, trade.side || "unknown", trade);
+    addStats(intervalMap, trade.interval || trade.snapshot?.market?.interval || "unknown", trade);
+    const keys = tradeFeatureKeysFromSnapshot(trade.snapshot);
+    keys.forEach((key) => addStats(featureMap, key, trade));
+    if (isBotLossTrade(trade)) keys.forEach((key) => addLossStats(key, trade));
+  });
+
+  const enrich = (item) => ({
+    ...item,
+    winRate: item.trades ? (item.wins / item.trades) * 100 : 0,
+    stopRate: item.trades ? (item.stops / item.trades) * 100 : 0,
+    targetRate: item.trades ? (item.targets / item.trades) * 100 : 0,
+    avgR: item.trades ? item.totalR / item.trades : 0,
+  });
+  const edges = [...featureMap.values()].map(enrich);
+  const bySide = [...sideMap.values()].map(enrich).sort((a, b) => b.avgR - a.avgR);
+  const byInterval = [...intervalMap.values()].map(enrich).sort((a, b) => b.avgR - a.avgR);
+  const lossHotspots = [...lossMap.values()]
+    .map((item) => {
+      const total = featureMap.get(item.key) || { trades: item.losses, wins: 0, stops: item.stops, targets: 0, totalR: -item.totalLossR, pnl: item.pnl };
+      const enriched = enrich(total);
+      return {
+        ...item,
+        totalTrades: total.trades || item.losses,
+        lossRate: total.trades ? (item.losses / total.trades) * 100 : 100,
+        stopRate: total.trades ? (item.stops / total.trades) * 100 : 0,
+        avgLossR: item.losses ? item.totalLossR / item.losses : 0,
+        avgR: enriched.avgR,
+        winRate: enriched.winRate,
+      };
+    })
+    .filter((item) => item.losses >= 2 || item.largeLosses >= 1)
+    .sort((a, b) => b.avgLossR - a.avgLossR || b.lossRate - a.lossRate)
+    .slice(0, 8);
+  const strongEdges = edges
+    .filter((item) => item.trades >= BOT_LEARNING_MIN_TRADES && (item.avgR > 0.08 || item.winRate >= 58 || item.targetRate > item.stopRate + 18))
+    .sort((a, b) => b.avgR - a.avgR || b.winRate - a.winRate)
+    .slice(0, 6);
+  const weakEdges = edges
+    .filter((item) => item.trades >= BOT_LEARNING_MIN_TRADES && (item.avgR < -0.06 || item.stopRate >= 58 || lossHotspots.some((loss) => loss.key === item.key && loss.lossRate >= 55)))
+    .sort((a, b) => a.avgR - b.avgR || b.stopRate - a.stopRate)
+    .slice(0, 6);
+  const blockedEdges = weakEdges
+    .filter((item) => item.avgR < -0.16 || item.stopRate >= 66 || lossHotspots.some((loss) => loss.key === item.key && loss.losses >= 2 && loss.avgLossR >= 0.85))
+    .slice(0, 4);
+  const recentAvgR = recent.length ? recentR / recent.length : 0;
+  const recentStopRate = recent.length ? (recent.filter((trade) => trade.exitReason === "stop").length / recent.length) * 100 : 0;
+  const recentLosses = recent.filter(isBotLossTrade).length;
+  const recentSlump = recent.length >= 4 && (recentAvgR < -0.14 || recentStopRate >= 62 || recentLosses >= Math.ceil(recent.length * 0.65));
+
+  return {
+    trades: closed.length,
+    wins,
+    losses: closed.length - wins,
+    winRate: closed.length ? (wins / closed.length) * 100 : 0,
+    totalPnl,
+    avgR: closed.length ? totalR / closed.length : 0,
+    targetRate: closed.length ? (targetCount / closed.length) * 100 : 0,
+    stopRate: closed.length ? (stopCount / closed.length) * 100 : 0,
+    recentTrades: recent.length,
+    recentAvgR,
+    recentStopRate,
+    recentSlump,
+    strongEdges,
+    weakEdges,
+    blockedEdges,
+    lossHotspots,
+    bySide,
+    byInterval,
+  };
+}
+
+function botLearningProfile(bot) {
+  const performance = summarizeBotPerformance(bot);
+  const lossCluster = performance.lossHotspots[0];
+  if (performance.trades < BOT_LEARNING_MIN_TRADES) {
+    const lossText = lossCluster
+      ? `Loss watch: ${formatFeatureKey(lossCluster.key)} (${lossCluster.losses}/${lossCluster.totalTrades} losses, avg -${fmt.format(lossCluster.avgLossR)}R).`
+      : "Loss watch: no repeated loss cluster yet.";
+    return {
+      ...performance,
+      ready: false,
+      mode: lossCluster ? "watch" : "collecting",
+      summary: `Learning pending: ${performance.trades}/${BOT_LEARNING_MIN_TRADES} closed trades. ${lossText} The bot reduces risk after losses until more records exist.`,
+    };
+  }
+
+  const best = performance.strongEdges[0];
+  const worst = performance.weakEdges[0];
+  const bestSegment = performance.byInterval[0] || performance.bySide[0];
+  const mode = performance.recentSlump ? "defensive" : lossCluster ? "loss-aware" : best ? "focused" : "balanced";
+  const modeText = mode === "defensive"
+    ? "Defensive mode: recent stops or negative R are lowering entries and shrinking risk in similar conditions."
+    : mode === "loss-aware"
+      ? "Loss-aware mode: repeated losing clusters are being blocked or heavily discounted."
+      : mode === "focused"
+        ? "Focused mode: the bot is favoring conditions that produced stronger R multiples."
+        : "Balanced mode: no dominant edge yet, so base strategy still carries more weight.";
+  const edgeText = best ? `Boost: ${formatFeatureKey(best.key)} (${fmt.format(best.avgR)}R / ${fmt.format(best.winRate)}%).` : "Boost: still collecting reliable positive patterns.";
+  const avoidText = worst ? `Avoid: ${formatFeatureKey(worst.key)} (${fmt.format(worst.avgR)}R / stop ${fmt.format(worst.stopRate)}%).` : "Avoid: no repeated weak pattern yet.";
+  const lossText = lossCluster ? `Loss cluster: ${formatFeatureKey(lossCluster.key)} (${lossCluster.losses}/${lossCluster.totalTrades} losses, avg -${fmt.format(lossCluster.avgLossR)}R).` : "";
+  const segmentText = bestSegment ? `Best segment: ${formatFeatureKey(bestSegment.key)} (${fmt.format(bestSegment.avgR)}R).` : "";
+
+  return {
+    ...performance,
+    ready: true,
+    mode,
+    summary: `${modeText} ${edgeText} ${avoidText} ${lossText} ${segmentText}`,
+  };
+}
+
+function lossPressureForPlan(bot, plan, analysis, profile = null) {
+  const learning = profile || botLearningProfile(bot);
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry: tradeEntryReference(plan), reason: "loss-pressure-preview" });
+  const keys = new Set(tradeFeatureKeysFromSnapshot(snapshot));
+  const matches = (learning.lossHotspots || []).filter((edge) => keys.has(edge.key));
+  const validationWeak = botPlanValidationWeak(plan);
+  if (!matches.length) return { penalty: 0, hardBlock: false, matches: [], reasons: [] };
+
+  let penalty = 0;
+  const reasons = [];
+  matches.forEach((edge) => {
+    const itemPenalty = clamp(edge.avgLossR * 9 + Math.max(0, edge.lossRate - 45) * 0.16 + edge.largeLosses * 3, 4, 24);
+    penalty += itemPenalty;
+    reasons.push(`loss ${formatFeatureKey(edge.key)}`);
+  });
+  const repeated = matches.some((edge) => edge.losses >= 2 && edge.lossRate >= 55 && edge.avgLossR >= 0.75);
+  const hardBlock = repeated && validationWeak && !matches.some((edge) => edge.winRate >= 58 && edge.avgR > 0.05);
+  return {
+    penalty: clamp(penalty, 0, 46),
+    hardBlock,
+    matches,
+    reasons,
+  };
+}
+
+function botLearningGate(bot, plan, analysis) {
+  const profile = botLearningProfile(bot);
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry: tradeEntryReference(plan), reason: "gate-preview" });
+  const keys = new Set(tradeFeatureKeysFromSnapshot(snapshot));
+  const blocked = profile.blockedEdges.filter((edge) => keys.has(edge.key));
+  const weak = profile.weakEdges.filter((edge) => keys.has(edge.key));
+  const strong = profile.strongEdges.filter((edge) => keys.has(edge.key));
+  const lossPressure = lossPressureForPlan(bot, plan, analysis, profile);
+  const reasons = [];
+  let adjustment = 0;
+
+  strong.forEach((edge) => {
+    adjustment += clamp(edge.avgR * 14 + (edge.winRate - 50) * 0.16 + (edge.targetRate - edge.stopRate) * 0.04, 2, 12);
+    reasons.push(`boost ${formatFeatureKey(edge.key)}`);
+  });
+  weak.forEach((edge) => {
+    adjustment -= clamp(Math.abs(edge.avgR) * 18 + Math.max(0, edge.stopRate - 45) * 0.12, 3, 18);
+    reasons.push(`penalty ${formatFeatureKey(edge.key)}`);
+  });
+  if (lossPressure.penalty) {
+    adjustment -= lossPressure.penalty;
+    reasons.push(...lossPressure.reasons);
+  }
+  if (profile.recentSlump && !strong.length) {
+    adjustment -= botPlanValidationWeak(plan) ? 14 : 8;
+    reasons.push("recent defensive mode");
+  }
+  if (plan.grade === "A+" || plan.grade === "A") adjustment += 4;
+  if (plan.grade === "C") adjustment -= 7;
+
+  const hardBlocked = blocked.some((edge) => edge.avgR < -0.22 || edge.stopRate >= 70);
+  const allowed = !(lossPressure.hardBlock && !strong.length) && !(hardBlocked && !strong.length) && !(profile.recentSlump && plan.grade === "C");
+  return {
+    allowed,
+    adjustment: clamp(adjustment, -58, 32),
+    reasons,
+    blocked,
+    weak,
+    strong,
+    lossPressure,
+  };
+}
+
+function botRiskMultiplier(bot) {
+  const streak = botLossStreak(bot);
+  const profile = botLearningProfile(bot);
+  let multiplier = 1;
+  if (streak >= 3) multiplier *= 0.3;
+  else if (streak === 2) multiplier *= 0.5;
+  else if (streak === 1) multiplier *= 0.7;
+  if (profile.recentSlump) multiplier *= 0.55;
+  if (profile.avgR < -0.5 || profile.stopRate >= 70) multiplier *= 0.7;
+  return clamp(multiplier, 0.2, 1);
+}
+
+function botPlanRiskMultiplier(bot, plan, analysis) {
+  const profile = botLearningProfile(bot);
+  const pressure = lossPressureForPlan(bot, plan, analysis, profile);
+  let multiplier = botRiskMultiplier(bot);
+  if (pressure.hardBlock) return 0;
+  if (pressure.penalty >= 24) multiplier *= 0.45;
+  else if (pressure.penalty >= 12) multiplier *= 0.65;
+  if (botPlanValidationWeak(plan) && pressure.matches.length) multiplier *= 0.75;
+  return clamp(multiplier, 0.15, 1);
+}
+
+function pickBotScenario(analysis, bot) {
+  const scenarios = botScenarioPool(analysis, bot);
+  if (!scenarios.length) return null;
+  return scenarios
+    .map((plan) => {
+      const baseScore = botTradePlanKey(bot, plan);
+      const strategyScore = botStrategyScore(bot, plan, analysis);
+      const gate = botLearningGate(bot, plan, analysis);
+      const exposure = botPortfolioExposureGate(bot, plan);
+      const directionScore = botDirectionScore(bot, plan, analysis);
+      const lossPenalty = gate.lossPressure?.penalty || 0;
+      const blockedPenalty = gate.allowed && exposure.allowed ? 0 : -999;
+      return {
+        plan,
+        score: baseScore + strategyScore + gate.adjustment + directionScore - lossPenalty + blockedPenalty,
+        strategyScore,
+        learningAdjustment: gate.adjustment,
+        directionScore,
+        lossPenalty,
+      };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.plan || scenarios[0];
+}
+
+function shouldOpenBotTrade(bot, analysis, plan) {
+  if (!plan) return false;
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const gate = botLearningGate(bot, plan, analysis);
+  const exposure = botPortfolioExposureGate(bot, plan);
+  const lossPressure = gate.lossPressure || lossPressureForPlan(bot, plan, analysis);
+  if (!gate.allowed || !exposure.allowed || lossPressure.hardBlock) return false;
+  if (botLossStreak(bot) >= 3 && plan.grade === "C") return false;
+  const consensusSide = analysis?.bias === "bearish" ? "short" : analysis?.bias === "bullish" ? "long" : null;
+  const counterTrend = consensusSide && plan.side !== consensusSide;
+  if (counterTrend && botPlanValidationWeak(plan) && gate.adjustment <= 4) return false;
+  if (lossPressure.penalty >= 28 && plan.grade !== "A+") return false;
+
+  const nearEntry = Math.abs(analysis.price - tradeEntryReference(plan)) <= Math.max(analysis.atr * 0.22, analysis.price * 0.0009);
+  const inRange = analysis.price >= plan.entryLow && analysis.price <= plan.entryHigh;
+  const priceOk = inRange || nearEntry;
+  const confidenceFloor = bot.strategy === "rr" ? 48 : bot.strategy === "winrate" || bot.id === "zeta" ? 54 : 50;
+  const confidenceOk = analysis.confidence >= Math.max(44, confidenceFloor - Math.max(0, gate.adjustment) * 0.06);
+  const gradeOk = plan.grade !== "C" || (bot.id === "gamma" && validation.expectancyR > 0.22 && gate.adjustment >= 6);
+  const learnedOk = gate.adjustment > -20;
+
+  if (!priceOk || !confidenceOk || !gradeOk || !learnedOk) return false;
+
+  if (bot.strategy === "winrate") {
+    return plan.validationPass && validation.winRate >= 55 && validation.expectancyR > 0 && validation.profitFactor >= 1.08;
+  }
+  if (bot.strategy === "expectancy") {
+    return validation.expectancyR > 0.14 && validation.winRate >= 50 && validation.profitFactor >= 1.03;
+  }
+  if (bot.id === "delta") {
+    const entry = tradeEntryReference(plan);
+    const tpMovePct = entry > 0 ? Math.abs((plan.takeProfit1 || entry) - entry) / entry * 100 : 0;
+    return tpMovePct <= 0.75 && validation.winRate >= 50 && validation.expectancyR > 0;
+  }
+  if (bot.id === "epsilon") {
+    return validation.expectancyR > 0 && analysis.confidence >= 52 && (plan.grade === "A+" || plan.grade === "A" || gate.adjustment > 6);
+  }
+  if (bot.id === "zeta") {
+    return validation.trades >= RECOMMENDATION_MIN_SAMPLE && validation.profitFactor >= 1.1 && validation.winRate >= 53;
+  }
+  return (plan.rr || 0) >= 1.2 && validation.expectancyR > 0 && validation.winRate >= 49;
+}
+
+function openBotTrade(bot, analysis, plan, candle, reason = "live") {
+  if (bot.openTrade) return false;
+
+  const available = botAvailableCapital(bot);
+  if (!Number.isFinite(available) || available <= 0) return false;
+  const riskMultiplier = botPlanRiskMultiplier(bot, plan, analysis);
+  if (riskMultiplier <= 0) return false;
+  const leverage = Math.max(1, Number(state.botDesk.settings.leverage) || 1);
+  const entry = candle?.close ?? analysis.price;
+  const stopLoss = pickBotStop(plan, entry, analysis);
+  const stopDistance = Math.abs(entry - stopLoss);
+  if (!Number.isFinite(stopDistance) || stopDistance <= 0) return false;
+
+  const maxRiskUsd = Math.max(1, available * botMaxRiskPct(bot) * riskMultiplier);
+  const rawMargin = Math.min(available, botAllocatedCapital(bot) * 0.38);
+  const rawNotional = rawMargin * leverage;
+  const quantityByMargin = entry > 0 ? rawNotional / entry : 0;
+  const quantityByRisk = maxRiskUsd / stopDistance;
+  const quantity = Math.min(quantityByMargin, quantityByRisk);
+  const notional = quantity * entry;
+  const marginUsed = leverage > 0 ? notional / leverage : notional;
+  const takeProfit = pickBotTarget(bot, plan, entry, analysis);
+  const riskUsd = stopDistance * quantity;
+
+  if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(riskUsd) || riskUsd <= 0 || marginUsed > available) return false;
+
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry, reason });
+  const learningGate = botLearningGate(bot, plan, analysis);
+  const exposure = botPortfolioExposureGate(bot, plan);
+  const lossPressure = learningGate.lossPressure || lossPressureForPlan(bot, plan, analysis);
+  snapshot.decision.strategyScore = botStrategyScore(bot, plan, analysis);
+  snapshot.decision.learningAdjustment = learningGate.adjustment;
+  snapshot.decision.directionProfile = botDirectionProfile(bot).label;
+  snapshot.decision.exposureReason = exposure.reason;
+  snapshot.decision.lossPressure = {
+    penalty: lossPressure.penalty,
+    hardBlock: lossPressure.hardBlock,
+    matches: lossPressure.matches.map((item) => ({
+      key: item.key,
+      losses: item.losses,
+      totalTrades: item.totalTrades,
+      avgLossR: item.avgLossR,
+      lossRate: item.lossRate,
+    })),
+  };
+  snapshot.decision.riskMultiplier = riskMultiplier;
+  snapshot.decision.maxRiskUsd = maxRiskUsd;
+  snapshot.decision.marginUsed = marginUsed;
+  snapshot.decision.finalScore = botTradePlanKey(bot, plan) + snapshot.decision.strategyScore + snapshot.decision.learningAdjustment + botDirectionScore(bot, plan, analysis) - (lossPressure.penalty || 0);
+
+  bot.openTrade = {
+    entry,
+    side: plan.side,
+    stopLoss,
+    takeProfit,
+    quantity,
+    notional,
+    marginUsed,
+    maxRiskUsd,
+    riskUsd,
+    openedAt: candle?.time ?? Date.now(),
+    interval: state.interval,
+    scenarioId: plan.scenarioId,
+    scenarioName: plan.scenarioName,
+    scenarioLabel: plan.scenarioLabel,
+    reason,
+    snapshot,
+  };
+  bot.lastTradeTime = candle?.time ?? Date.now();
+  return true;
+}
+
+function diagnoseBotTradeExit(trade, exitReason, pnl, rMultiple) {
+  if (pnl >= 0) return exitReason === "target" ? "Target was hit." : "Closed positive by timeout or rule.";
+  const snapshot = trade.snapshot || {};
+  const market = snapshot.market || {};
+  const scenario = snapshot.scenario || {};
+  const validation = snapshot.validation || {};
+  const backtest = snapshot.backtest || {};
+  const reasons = [];
+  if (exitReason === "stop") reasons.push("Stop-loss was hit");
+  if (Math.abs(rMultiple) >= 1) reasons.push("full-R loss");
+  if (edgeQualityKey(validation) === "negative") reasons.push("weak 1Y validation");
+  if (edgeQualityKey(backtest) === "negative") reasons.push("weak similar-pattern backtest");
+  const marketSide = market.bias === "bearish" ? "short" : market.bias === "bullish" ? "long" : null;
+  if (scenario.side && marketSide && scenario.side !== marketSide) reasons.push("counter-bias entry");
+  if ((Number(market.compositeScore) || 0) < 45) reasons.push("low composite score");
+  if ((Number(market.atrPct) || 0) < 0.25) reasons.push("low-volatility chop risk");
+  return `${reasons.join(", ") || "Negative close"}; future matching conditions receive stronger penalties and lower risk sizing.`;
+}
+
+function closeBotTrade(bot, exitPrice, candle, exitReason) {
+  const trade = bot.openTrade;
+  if (!trade) return false;
+  const gross = trade.side === "long"
+    ? (exitPrice - trade.entry) * trade.quantity
+    : (trade.entry - exitPrice) * trade.quantity;
+  const costRate = ((state.risk.feePct || 0) + (state.risk.slippagePct || 0)) / 100;
+  const cost = trade.notional * costRate;
+  const pnl = gross - cost;
+  const rMultiple = trade.riskUsd > 0 ? pnl / trade.riskUsd : 0;
+  const closeSnapshot = buildCloseSnapshot(trade, exitPrice, candle, exitReason, pnl, rMultiple);
+  const stopDistancePct = trade.entry > 0 ? Math.abs(trade.entry - trade.stopLoss) / trade.entry * 100 : 0;
+  const lossDiagnostics = {
+    largeLoss: rMultiple <= -0.9 || pnl <= -(trade.maxRiskUsd || trade.riskUsd || 0) * 0.9,
+    reason: diagnoseBotTradeExit(trade, exitReason, pnl, rMultiple),
+    riskUsd: trade.riskUsd,
+    maxRiskUsd: trade.maxRiskUsd || trade.riskUsd,
+    marginUsed: trade.marginUsed || 0,
+    notional: trade.notional || 0,
+    leverage: state.botDesk.settings.leverage,
+    stopDistancePct,
+    featureKeys: tradeFeatureKeysFromSnapshot(trade.snapshot).slice(0, 16),
+  };
+
+  bot.trades += 1;
+  if (pnl >= 0) bot.wins += 1;
+  else bot.losses += 1;
+  bot.realizedPnl += pnl;
+  bot.history.push({
+    time: candle?.time ?? Date.now(),
+    interval: trade.interval,
+    side: trade.side,
+    scenarioName: trade.scenarioName,
+    scenarioLabel: trade.scenarioLabel,
+    entry: trade.entry,
+    exit: exitPrice,
+    pnl,
+    rMultiple,
+    exitReason,
+    snapshot: trade.snapshot || null,
+    closeSnapshot,
+    holdingMinutes: closeSnapshot.holdingMinutes,
+    riskDiagnostics: lossDiagnostics,
+  });
+  bot.openTrade = null;
+  bot.lastTradeTime = candle?.time ?? Date.now();
+  return true;
+}
+
+function renderLearningEdges(profile) {
+  const strong = profile.strongEdges?.length
+    ? profile.strongEdges.map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${fmt.format(edge.avgR)}R / ${fmt.format(edge.winRate)}%</strong></li>`).join("")
+    : `<li><span>Collecting positive patterns</span><strong>-</strong></li>`;
+  const weak = profile.weakEdges?.length
+    ? profile.weakEdges.map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${fmt.format(edge.avgR)}R / stop ${fmt.format(edge.stopRate)}%</strong></li>`).join("")
+    : `<li><span>No repeated weak pattern</span><strong>-</strong></li>`;
+  const losses = profile.lossHotspots?.length
+    ? profile.lossHotspots.slice(0, 4).map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${edge.losses}/${edge.totalTrades} · -${fmt.format(edge.avgLossR)}R</strong></li>`).join("")
+    : `<li><span>No loss cluster</span><strong>-</strong></li>`;
+  const segments = profile.byInterval?.length
+    ? profile.byInterval.slice(0, 3).map((edge) => `<li><span>${formatFeatureKey(edge.key)}</span><strong>${fmt.format(edge.avgR)}R / ${fmt.format(edge.winRate)}%</strong></li>`).join("")
+    : `<li><span>Segment data pending</span><strong>-</strong></li>`;
+  return `
+    <div class="learning-edge-grid">
+      <section><h4>Boost conditions</h4><ul>${strong}</ul></section>
+      <section><h4>Avoid conditions</h4><ul>${weak}</ul></section>
+      <section><h4>Loss clusters</h4><ul>${losses}</ul></section>
+      <section><h4>Best segments</h4><ul>${segments}</ul></section>
+    </div>
+  `;
+}
+
 function boot() {
   bindEvents();
   state.botDesk = loadBotDeskState();
