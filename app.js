@@ -3142,7 +3142,9 @@ function renderBotDesk() {
           <div class="bot-line"><span>현재 시나리오</span><strong>${openTrade ? botTradeDisplayName(openTrade) : "대기"}</strong></div>
           <div class="bot-line"><span>미실현 손익</span><strong class="${openPnlClass}">${fmtUsd.format(openPnl)}</strong></div>
           ${openTrade ? `
-            <div class="bot-line"><span>진입 / 목표</span><strong>${fmtUsd.format(openTrade.entry)} → ${fmtUsd.format(openTrade.takeProfit)}</strong></div>
+            <div class="bot-line"><span>진입 / 목표</span><strong>${fmtUsd.format(openTrade.avgEntry || openTrade.entry)} → ${fmtUsd.format(openTrade.takeProfit)}</strong></div>
+            <div class="bot-line"><span>분할 진입</span><strong>${botScaleInSummary(openTrade)}</strong></div>
+            <div class="bot-line"><span>분할 익절</span><strong>${botPartialExitSummary(openTrade)}</strong></div>
             <div class="bot-line"><span>손절</span><strong>${fmtUsd.format(openTrade.stopLoss)}</strong></div>
             <div class="bot-line"><span>손실 한도</span><strong>${fmtUsd.format(openTrade.riskUsd || 0)} / ${fmtUsd.format(openTrade.maxRiskUsd || 0)}</strong></div>
           ` : ""}
@@ -5605,6 +5607,476 @@ function renderLearningEdges(profile) {
       <section><h4>Best segments</h4><ul>${segments}</ul></section>
     </div>
   `;
+}
+
+function botSplitProfile(bot) {
+  const profiles = {
+    alpha: { entries: [0.55, 0.3, 0.15], exits: [0.5, 0.3, 1], name: "stable split" },
+    beta: { entries: [0.5, 0.3, 0.2], exits: [0.42, 0.33, 1], name: "balanced split" },
+    gamma: { entries: [0.45, 0.25, 0.3], exits: [0.3, 0.35, 1], name: "breakout split" },
+    delta: { entries: [0.65, 0.25, 0.1], exits: [0.58, 0.28, 1], name: "scalp split" },
+    epsilon: { entries: [0.5, 0.25, 0.25], exits: [0.32, 0.33, 1], name: "trend split" },
+    zeta: { entries: [0.55, 0.25, 0.2], exits: [0.48, 0.32, 1], name: "validation split" },
+  };
+  return profiles[bot.id] || { entries: [0.55, 0.3, 0.15], exits: [0.45, 0.35, 1], name: "split" };
+}
+
+function validTargetForSide(side, entry, value) {
+  return Number.isFinite(value) && (side === "short" ? value < entry : value > entry);
+}
+
+function clampBetween(value, a, b) {
+  const min = Math.min(a, b);
+  const max = Math.max(a, b);
+  return clamp(value, min, max);
+}
+
+function splitEntryLevels(plan, entry, stopLoss, analysis) {
+  const side = plan.side === "short" ? "short" : "long";
+  const riskUnit = Math.max(Math.abs(entry - stopLoss), analysis?.atr || entry * 0.003, entry * 0.0015);
+  const tp1 = validTargetForSide(side, entry, plan.takeProfit1) ? plan.takeProfit1 : pickBotTarget({ strategy: "winrate" }, plan, entry, analysis);
+  const pullback = side === "long"
+    ? clampBetween(Math.min(entry - riskUnit * 0.28, Number(plan.entryLow) || entry - riskUnit * 0.18), stopLoss + riskUnit * 0.22, entry - riskUnit * 0.08)
+    : clampBetween(Math.max(entry + riskUnit * 0.28, Number(plan.entryHigh) || entry + riskUnit * 0.18), entry + riskUnit * 0.08, stopLoss - riskUnit * 0.22);
+  const confirmation = side === "long"
+    ? clampBetween(entry + riskUnit * 0.2, entry + riskUnit * 0.08, tp1 - riskUnit * 0.08)
+    : clampBetween(entry - riskUnit * 0.2, tp1 + riskUnit * 0.08, entry - riskUnit * 0.08);
+
+  return [
+    { id: "initial", label: "Initial", trigger: "market", price: entry, filled: true },
+    { id: "pullback", label: side === "long" ? "Support add" : "Resistance add", trigger: "pullback", price: pullback, filled: false },
+    { id: "confirmation", label: side === "long" ? "Breakout add" : "Breakdown add", trigger: "confirmation", price: confirmation, filled: false },
+  ];
+}
+
+function splitTargetLevels(bot, plan, entry, analysis) {
+  const side = plan.side === "short" ? "short" : "long";
+  const profile = botSplitProfile(bot);
+  const fallback = pickBotTarget(bot, plan, entry, analysis);
+  const riskUnit = Math.max(Math.abs(entry - pickBotStop(plan, entry, analysis)), analysis?.atr || entry * 0.003, entry * 0.0015);
+  const targets = [plan.takeProfit1, plan.takeProfit2, plan.takeProfit3].map((target, index) => {
+    if (validTargetForSide(side, entry, target)) return target;
+    const rr = [0.8, 1.25, 1.8][index];
+    return side === "short" ? entry - riskUnit * rr : entry + riskUnit * rr;
+  });
+  if (!validTargetForSide(side, entry, targets[0])) targets[0] = fallback;
+  return targets.map((price, index) => ({
+    id: `tp${index + 1}`,
+    label: `TP${index + 1}`,
+    price,
+    fraction: profile.exits[index] ?? (index === 2 ? 1 : 0.33),
+    filled: false,
+  }));
+}
+
+function trancheSizing(entry, stopLoss, riskUsd, marginUsd, leverage) {
+  const stopDistance = Math.abs(entry - stopLoss);
+  if (!Number.isFinite(stopDistance) || stopDistance <= 0 || !Number.isFinite(entry) || entry <= 0) return null;
+  const qtyByRisk = riskUsd / stopDistance;
+  const qtyByMargin = marginUsd > 0 ? (marginUsd * leverage) / entry : qtyByRisk;
+  const quantity = Math.min(qtyByRisk, qtyByMargin);
+  if (!Number.isFinite(quantity) || quantity <= 0) return null;
+  const notional = quantity * entry;
+  return {
+    quantity,
+    notional,
+    marginUsed: leverage > 0 ? notional / leverage : notional,
+    riskUsd: stopDistance * quantity,
+  };
+}
+
+function refreshTradeNextTarget(trade) {
+  const nextTarget = (trade.targetPlan || []).find((target) => !target.filled);
+  trade.takeProfit = nextTarget ? nextTarget.price : trade.takeProfit;
+}
+
+function normalizeSplitOpenTrade(trade, bot = null, analysis = null) {
+  if (!trade) return null;
+  const side = trade.side === "short" ? "short" : "long";
+  const totalQuantity = Number(trade.quantity) || Number(trade.remainingQuantity) || 0;
+  const remaining = Number.isFinite(Number(trade.remainingQuantity)) ? Number(trade.remainingQuantity) : totalQuantity;
+  trade.quantity = totalQuantity;
+  trade.remainingQuantity = Math.max(0, remaining);
+  trade.avgEntry = Number(trade.avgEntry) || Number(trade.entry) || 0;
+  trade.realizedPnl = Number(trade.realizedPnl) || 0;
+  trade.realizedCost = Number(trade.realizedCost) || 0;
+  trade.closedQuantity = Number(trade.closedQuantity) || Math.max(0, totalQuantity - trade.remainingQuantity);
+  trade.scaleIns = Array.isArray(trade.scaleIns) && trade.scaleIns.length
+    ? trade.scaleIns
+    : [{
+        id: "initial",
+        label: "Initial",
+        trigger: "market",
+        price: trade.entry,
+        portion: 1,
+        filled: true,
+        quantity: totalQuantity,
+        notional: Number(trade.notional) || totalQuantity * (Number(trade.entry) || 0),
+        marginUsed: Number(trade.marginUsed) || 0,
+        riskUsd: Number(trade.riskUsd) || 0,
+        time: trade.openedAt || Date.now(),
+      }];
+  if (!Array.isArray(trade.targetPlan) || !trade.targetPlan.length) {
+    const fallbackPlan = {
+      side,
+      takeProfit1: trade.takeProfit,
+      takeProfit2: side === "short" ? trade.takeProfit - Math.abs(trade.entry - trade.takeProfit) * 0.65 : trade.takeProfit + Math.abs(trade.takeProfit - trade.entry) * 0.65,
+      takeProfit3: side === "short" ? trade.takeProfit - Math.abs(trade.entry - trade.takeProfit) * 1.2 : trade.takeProfit + Math.abs(trade.takeProfit - trade.entry) * 1.2,
+      stopLoss: trade.stopLoss,
+    };
+    trade.targetPlan = splitTargetLevels(bot || { id: "alpha", strategy: "winrate" }, fallbackPlan, trade.avgEntry || trade.entry, analysis || {});
+  }
+  trade.partialExits = Array.isArray(trade.partialExits) ? trade.partialExits : [];
+  refreshTradeNextTarget(trade);
+  return trade;
+}
+
+function botOpenPnl(bot, price) {
+  const trade = normalizeSplitOpenTrade(bot.openTrade, bot);
+  if (!trade) return 0;
+  const quantity = Number(trade.remainingQuantity) || 0;
+  if (!quantity || !Number.isFinite(price)) return 0;
+  const entry = Number(trade.avgEntry) || Number(trade.entry) || 0;
+  const move = trade.side === "long" ? price - entry : entry - price;
+  return move * quantity;
+}
+
+function botScaleInSummary(trade) {
+  const normalized = normalizeSplitOpenTrade(trade);
+  if (!normalized) return "-";
+  const scaleIns = normalized.scaleIns || [];
+  const filled = scaleIns.filter((item) => item.filled).length;
+  return `${filled}/${scaleIns.length} · avg ${fmtUsd.format(normalized.avgEntry || normalized.entry)}`;
+}
+
+function botPartialExitSummary(trade) {
+  const normalized = normalizeSplitOpenTrade(trade);
+  if (!normalized) return "-";
+  const targets = normalized.targetPlan || [];
+  const filled = targets.filter((item) => item.filled).length;
+  const total = Number(normalized.quantity) || 0;
+  const remaining = Number(normalized.remainingQuantity) || 0;
+  const remainPct = total > 0 ? (remaining / total) * 100 : 0;
+  return `${filled}/${targets.length} · remain ${fmt.format(remainPct)}%`;
+}
+
+function splitHit(trade, candle, price, trigger = "target") {
+  if (!Number.isFinite(price)) return false;
+  if (trade.side === "short") {
+    return trigger === "pullback" ? candle.high >= price : candle.low <= price;
+  }
+  return trigger === "pullback" ? candle.low <= price : candle.high >= price;
+}
+
+function moveStopAfterPartial(trade, target) {
+  const entry = Number(trade.avgEntry) || Number(trade.entry) || 0;
+  if (!entry) return;
+  if (target.id === "tp1") {
+    trade.stopLoss = trade.side === "short" ? Math.min(trade.stopLoss, entry) : Math.max(trade.stopLoss, entry);
+  }
+  if (target.id === "tp2") {
+    const tp1 = (trade.targetPlan || []).find((item) => item.id === "tp1");
+    const trail = Number(tp1?.price) || entry;
+    trade.stopLoss = trade.side === "short" ? Math.min(trade.stopLoss, trail) : Math.max(trade.stopLoss, trail);
+  }
+}
+
+function applyPartialExit(bot, trade, target, candle) {
+  normalizeSplitOpenTrade(trade, bot);
+  const remaining = Number(trade.remainingQuantity) || 0;
+  if (!remaining || target.filled) return false;
+  const isFinal = target.id === "tp3" || (trade.targetPlan || []).filter((item) => !item.filled).length <= 1;
+  const closeQty = isFinal ? remaining : Math.min(remaining, remaining * clamp(Number(target.fraction) || 0.33, 0.1, 0.85));
+  if (!Number.isFinite(closeQty) || closeQty <= 0) return false;
+  const exitPrice = target.price;
+  const entry = Number(trade.avgEntry) || Number(trade.entry) || 0;
+  const gross = trade.side === "long" ? (exitPrice - entry) * closeQty : (entry - exitPrice) * closeQty;
+  const costRate = ((state.risk.feePct || 0) + (state.risk.slippagePct || 0)) / 100;
+  const cost = Math.abs(exitPrice * closeQty) * costRate;
+  const pnl = gross - cost;
+
+  target.filled = true;
+  target.filledAt = candle?.time ?? Date.now();
+  target.quantity = closeQty;
+  target.pnl = pnl;
+  target.exitPrice = exitPrice;
+  trade.remainingQuantity = Math.max(0, remaining - closeQty);
+  trade.closedQuantity = (Number(trade.closedQuantity) || 0) + closeQty;
+  trade.realizedPnl = (Number(trade.realizedPnl) || 0) + pnl;
+  trade.realizedCost = (Number(trade.realizedCost) || 0) + cost;
+  trade.partialExits.push({
+    id: target.id,
+    label: target.label,
+    price: exitPrice,
+    quantity: closeQty,
+    pnl,
+    time: candle?.time ?? Date.now(),
+  });
+  bot.realizedPnl += pnl;
+  moveStopAfterPartial(trade, target);
+  refreshTradeNextTarget(trade);
+  return true;
+}
+
+function applyScaleIn(bot, trade, tranche, candle) {
+  normalizeSplitOpenTrade(trade, bot);
+  if (tranche.filled || trade.partialExits?.length) return false;
+  const leverage = Math.max(1, Number(state.botDesk.settings.leverage) || 1);
+  const maxMargin = Number(trade.maxMarginUsed) || Number(trade.marginUsed) || 0;
+  const usedMargin = Number(trade.marginUsed) || 0;
+  const marginBudget = Math.max(0, (Number(tranche.marginBudget) || 0) || maxMargin * (Number(tranche.portion) || 0));
+  const remainingMargin = Math.max(0, maxMargin - usedMargin);
+  const sizing = trancheSizing(tranche.price, trade.stopLoss, Number(tranche.riskBudget) || 0, Math.min(marginBudget, remainingMargin), leverage);
+  if (!sizing) return false;
+  const oldQuantity = Number(trade.remainingQuantity) || 0;
+  const oldEntry = Number(trade.avgEntry) || Number(trade.entry) || tranche.price;
+  const newQuantity = oldQuantity + sizing.quantity;
+  trade.avgEntry = newQuantity > 0 ? ((oldEntry * oldQuantity) + (tranche.price * sizing.quantity)) / newQuantity : oldEntry;
+  trade.entry = trade.avgEntry;
+  trade.quantity = (Number(trade.quantity) || 0) + sizing.quantity;
+  trade.remainingQuantity = newQuantity;
+  trade.notional = (Number(trade.notional) || 0) + sizing.notional;
+  trade.marginUsed = usedMargin + sizing.marginUsed;
+  trade.riskUsd = (Number(trade.riskUsd) || 0) + sizing.riskUsd;
+  tranche.filled = true;
+  tranche.filledAt = candle?.time ?? Date.now();
+  tranche.quantity = sizing.quantity;
+  tranche.notional = sizing.notional;
+  tranche.marginUsed = sizing.marginUsed;
+  tranche.riskUsd = sizing.riskUsd;
+  return true;
+}
+
+function processSplitScaleIns(bot, candle) {
+  const trade = normalizeSplitOpenTrade(bot.openTrade, bot);
+  if (!trade || trade.partialExits?.length) return false;
+  let changed = false;
+  (trade.scaleIns || []).forEach((tranche) => {
+    if (tranche.filled || tranche.trigger === "market") return;
+    const trigger = tranche.trigger === "pullback" ? "pullback" : "confirmation";
+    if (splitHit(trade, candle, tranche.price, trigger)) {
+      changed = applyScaleIn(bot, trade, tranche, candle) || changed;
+    }
+  });
+  refreshTradeNextTarget(trade);
+  return changed;
+}
+
+function processSplitTargets(bot, candle) {
+  const trade = normalizeSplitOpenTrade(bot.openTrade, bot);
+  if (!trade) return false;
+  let changed = false;
+  for (const target of trade.targetPlan || []) {
+    if (target.filled) continue;
+    if (!splitHit(trade, candle, target.price, "target")) continue;
+    changed = applyPartialExit(bot, trade, target, candle) || changed;
+    if (!bot.openTrade || (Number(trade.remainingQuantity) || 0) <= 0) {
+      closeBotTrade(bot, target.price, candle, "target");
+      return true;
+    }
+  }
+  return changed;
+}
+
+function openBotTrade(bot, analysis, plan, candle, reason = "live") {
+  if (bot.openTrade) return false;
+
+  const available = botAvailableCapital(bot);
+  if (!Number.isFinite(available) || available <= 0) return false;
+  const riskMultiplier = botPlanRiskMultiplier(bot, plan, analysis);
+  if (riskMultiplier <= 0) return false;
+  const leverage = Math.max(1, Number(state.botDesk.settings.leverage) || 1);
+  const entry = candle?.close ?? analysis.price;
+  const stopLoss = pickBotStop(plan, entry, analysis);
+  const stopDistance = Math.abs(entry - stopLoss);
+  if (!Number.isFinite(stopDistance) || stopDistance <= 0) return false;
+
+  const profile = botSplitProfile(bot);
+  const entryPlan = splitEntryLevels(plan, entry, stopLoss, analysis);
+  const targetPlan = splitTargetLevels(bot, plan, entry, analysis);
+  const maxRiskUsd = Math.max(1, available * botMaxRiskPct(bot) * riskMultiplier);
+  const maxMarginUsed = Math.min(available, botAllocatedCapital(bot) * 0.38);
+  const initialRisk = maxRiskUsd * profile.entries[0];
+  const initialMargin = maxMarginUsed * profile.entries[0];
+  const sizing = trancheSizing(entry, stopLoss, initialRisk, initialMargin, leverage);
+  if (!sizing) return false;
+
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry, reason });
+  const learningGate = botLearningGate(bot, plan, analysis);
+  const exposure = botPortfolioExposureGate(bot, plan);
+  const lossPressure = learningGate.lossPressure || lossPressureForPlan(bot, plan, analysis);
+  snapshot.decision.strategyScore = botStrategyScore(bot, plan, analysis);
+  snapshot.decision.learningAdjustment = learningGate.adjustment;
+  snapshot.decision.directionProfile = botDirectionProfile(bot).label;
+  snapshot.decision.exposureReason = exposure.reason;
+  snapshot.decision.lossPressure = {
+    penalty: lossPressure.penalty,
+    hardBlock: lossPressure.hardBlock,
+    matches: lossPressure.matches.map((item) => ({
+      key: item.key,
+      losses: item.losses,
+      totalTrades: item.totalTrades,
+      avgLossR: item.avgLossR,
+      lossRate: item.lossRate,
+    })),
+  };
+  snapshot.decision.splitProfile = profile.name;
+  snapshot.decision.riskMultiplier = riskMultiplier;
+  snapshot.decision.maxRiskUsd = maxRiskUsd;
+  snapshot.decision.marginUsed = sizing.marginUsed;
+  snapshot.decision.finalScore = botTradePlanKey(bot, plan) + snapshot.decision.strategyScore + snapshot.decision.learningAdjustment + botDirectionScore(bot, plan, analysis) - (lossPressure.penalty || 0);
+
+  entryPlan.forEach((tranche, index) => {
+    tranche.portion = profile.entries[index] || 0;
+    tranche.riskBudget = maxRiskUsd * tranche.portion;
+    tranche.marginBudget = maxMarginUsed * tranche.portion;
+  });
+  Object.assign(entryPlan[0], {
+    quantity: sizing.quantity,
+    notional: sizing.notional,
+    marginUsed: sizing.marginUsed,
+    riskUsd: sizing.riskUsd,
+    time: candle?.time ?? Date.now(),
+  });
+
+  bot.openTrade = {
+    entry,
+    avgEntry: entry,
+    side: plan.side,
+    stopLoss,
+    takeProfit: targetPlan[0]?.price || pickBotTarget(bot, plan, entry, analysis),
+    targetPlan,
+    scaleIns: entryPlan,
+    partialExits: [],
+    quantity: sizing.quantity,
+    remainingQuantity: sizing.quantity,
+    closedQuantity: 0,
+    notional: sizing.notional,
+    marginUsed: sizing.marginUsed,
+    maxMarginUsed,
+    maxRiskUsd,
+    riskUsd: sizing.riskUsd,
+    totalPlannedRiskUsd: maxRiskUsd,
+    realizedPnl: 0,
+    realizedCost: 0,
+    openedAt: candle?.time ?? Date.now(),
+    interval: state.interval,
+    scenarioId: plan.scenarioId,
+    scenarioName: plan.scenarioName,
+    scenarioLabel: plan.scenarioLabel,
+    reason,
+    snapshot,
+  };
+  bot.lastTradeTime = candle?.time ?? Date.now();
+  return true;
+}
+
+function closeBotTrade(bot, exitPrice, candle, exitReason) {
+  const trade = normalizeSplitOpenTrade(bot.openTrade, bot);
+  if (!trade) return false;
+  const remaining = Number.isFinite(Number(trade.remainingQuantity))
+    ? Math.max(0, Number(trade.remainingQuantity))
+    : Math.max(0, Number(trade.quantity) || 0);
+  const entry = Number(trade.avgEntry) || Number(trade.entry) || 0;
+  const costRate = ((state.risk.feePct || 0) + (state.risk.slippagePct || 0)) / 100;
+  const gross = trade.side === "long" ? (exitPrice - entry) * remaining : (entry - exitPrice) * remaining;
+  const cost = Math.abs(exitPrice * remaining) * costRate;
+  const finalPnl = remaining > 0 ? gross - cost : 0;
+  const totalPnl = (Number(trade.realizedPnl) || 0) + finalPnl;
+  const totalRisk = Math.max(Number(trade.riskUsd) || Number(trade.maxRiskUsd) || 0, 1);
+  const rMultiple = totalPnl / totalRisk;
+  const closeSnapshot = buildCloseSnapshot(trade, exitPrice, candle, exitReason, totalPnl, rMultiple);
+  const stopDistancePct = entry > 0 ? Math.abs(entry - trade.stopLoss) / entry * 100 : 0;
+  const finalExit = remaining > 0 ? {
+    id: exitReason,
+    label: exitReason === "target" ? "Final TP" : exitReason,
+    price: exitPrice,
+    quantity: remaining,
+    pnl: finalPnl,
+    time: candle?.time ?? Date.now(),
+  } : null;
+  const partialExits = finalExit ? [...(trade.partialExits || []), finalExit] : [...(trade.partialExits || [])];
+  const lossDiagnostics = {
+    largeLoss: rMultiple <= -0.9 || totalPnl <= -(trade.maxRiskUsd || trade.riskUsd || 0) * 0.9,
+    reason: diagnoseBotTradeExit(trade, exitReason, totalPnl, rMultiple),
+    riskUsd: trade.riskUsd,
+    maxRiskUsd: trade.maxRiskUsd || trade.riskUsd,
+    marginUsed: trade.marginUsed || 0,
+    notional: trade.notional || 0,
+    leverage: state.botDesk.settings.leverage,
+    stopDistancePct,
+    featureKeys: tradeFeatureKeysFromSnapshot(trade.snapshot).slice(0, 16),
+  };
+
+  bot.trades += 1;
+  if (totalPnl >= 0) bot.wins += 1;
+  else bot.losses += 1;
+  bot.realizedPnl += finalPnl;
+  bot.history.push({
+    time: candle?.time ?? Date.now(),
+    interval: trade.interval,
+    side: trade.side,
+    scenarioName: trade.scenarioName,
+    scenarioLabel: trade.scenarioLabel,
+    entry: trade.avgEntry || trade.entry,
+    exit: exitPrice,
+    pnl: totalPnl,
+    rMultiple,
+    exitReason,
+    snapshot: trade.snapshot || null,
+    closeSnapshot,
+    holdingMinutes: closeSnapshot.holdingMinutes,
+    scaleIns: trade.scaleIns || [],
+    partialExits,
+    riskDiagnostics: lossDiagnostics,
+  });
+  bot.openTrade = null;
+  bot.lastTradeTime = candle?.time ?? Date.now();
+  return true;
+}
+
+function updateBotDeskOnCandle(candle, analysis) {
+  if (!analysis) return;
+  let changed = false;
+
+  state.botDesk.bots.forEach((bot) => {
+    if (!bot.openTrade || bot.lastTradeTime === candle.time) return;
+    const trade = normalizeSplitOpenTrade(bot.openTrade, bot, analysis);
+    const stopHit = trade.side === "long" ? candle.low <= trade.stopLoss : candle.high >= trade.stopLoss;
+    const nextTarget = (trade.targetPlan || []).find((target) => !target.filled);
+    const targetHit = nextTarget ? splitHit(trade, candle, nextTarget.price, "target") : false;
+    const favorableCandle = trade.side === "long" ? candle.close >= candle.open : candle.close <= candle.open;
+
+    if (stopHit && (!targetHit || !favorableCandle)) {
+      changed = closeBotTrade(bot, trade.stopLoss, candle, "stop") || changed;
+      return;
+    }
+
+    changed = processSplitScaleIns(bot, candle) || changed;
+    changed = processSplitTargets(bot, candle) || changed;
+  });
+
+  if (!state.botDesk.running) {
+    if (changed) saveBotDeskState();
+    return;
+  }
+
+  const hasTradableCapital = state.botDesk.bots.some((bot) => bot.openTrade || !botIsDepleted(bot, candle.close));
+  if (!hasTradableCapital) {
+    state.botDesk.running = false;
+    saveBotDeskState();
+    return;
+  }
+
+  state.botDesk.bots.forEach((bot) => {
+    if (bot.openTrade || bot.lastTradeTime === candle.time || botIsDepleted(bot, candle.close)) return;
+    const plan = pickBotScenario(analysis, bot);
+    if (plan && shouldOpenBotTrade(bot, analysis, plan)) {
+      changed = openBotTrade(bot, analysis, plan, candle, "live") || changed;
+    }
+  });
+
+  if (changed) saveBotDeskState();
 }
 
 function boot() {
