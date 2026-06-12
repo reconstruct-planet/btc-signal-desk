@@ -2301,7 +2301,7 @@ function createDefaultBotDesk() {
         id: "alpha",
         name: "안정형 봇",
         strategy: "winrate",
-        allocation: 0.18,
+        allocation: 0.12,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -2314,7 +2314,7 @@ function createDefaultBotDesk() {
         id: "beta",
         name: "균형형 봇",
         strategy: "expectancy",
-        allocation: 0.17,
+        allocation: 0.11,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -2327,7 +2327,7 @@ function createDefaultBotDesk() {
         id: "gamma",
         name: "공격형 봇",
         strategy: "rr",
-        allocation: 0.17,
+        allocation: 0.1,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -2340,7 +2340,7 @@ function createDefaultBotDesk() {
         id: "delta",
         name: "스캘핑 봇",
         strategy: "expectancy",
-        allocation: 0.16,
+        allocation: 0.1,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -2353,7 +2353,7 @@ function createDefaultBotDesk() {
         id: "epsilon",
         name: "추세추종 봇",
         strategy: "rr",
-        allocation: 0.16,
+        allocation: 0.11,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -2366,7 +2366,46 @@ function createDefaultBotDesk() {
         id: "zeta",
         name: "검증형 봇",
         strategy: "winrate",
-        allocation: 0.16,
+        allocation: 0.12,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        realizedPnl: 0,
+        history: [],
+        openTrade: null,
+        lastTradeTime: null,
+      },
+      {
+        id: "eta",
+        name: "고확률 컨플루언스 봇",
+        strategy: "probability",
+        allocation: 0.12,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        realizedPnl: 0,
+        history: [],
+        openTrade: null,
+        lastTradeTime: null,
+      },
+      {
+        id: "theta",
+        name: "저변동 검증 봇",
+        strategy: "quality",
+        allocation: 0.11,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        realizedPnl: 0,
+        history: [],
+        openTrade: null,
+        lastTradeTime: null,
+      },
+      {
+        id: "iota",
+        name: "리테스트 확률 봇",
+        strategy: "retest",
+        allocation: 0.11,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -3147,7 +3186,9 @@ function renderBotDesk() {
             <div class="bot-line"><span>분할 익절</span><strong>${botPartialExitSummary(openTrade)}</strong></div>
             <div class="bot-line"><span>손절</span><strong>${fmtUsd.format(openTrade.stopLoss)}</strong></div>
             <div class="bot-line"><span>손실 한도</span><strong>${fmtUsd.format(openTrade.riskUsd || 0)} / ${fmtUsd.format(openTrade.maxRiskUsd || 0)}</strong></div>
-          ` : ""}
+          ` : `
+            <div class="bot-line"><span>진입 상태</span><strong>${bot.lastSkipReason || (state.botDesk.running ? "조건 확인 중" : "일시중단")}</strong></div>
+          `}
         </div>
         <div class="bot-history">
           <button class="history-toggle ${historyOpen ? "is-active" : ""}" type="button" data-bot-history="${bot.id}" aria-pressed="${historyOpen ? "true" : "false"}">
@@ -4969,6 +5010,7 @@ function openBotTrade(bot, analysis, plan, candle, reason = "live") {
     reason,
     snapshot,
   };
+  bot.lastSkipReason = null;
   bot.lastTradeTime = candle?.time ?? Date.now();
   return true;
 }
@@ -5514,6 +5556,7 @@ function openBotTrade(bot, analysis, plan, candle, reason = "live") {
     reason,
     snapshot,
   };
+  bot.lastSkipReason = null;
   bot.lastTradeTime = candle?.time ?? Date.now();
   return true;
 }
@@ -5967,6 +6010,7 @@ function openBotTrade(bot, analysis, plan, candle, reason = "live") {
     reason,
     snapshot,
   };
+  bot.lastSkipReason = null;
   bot.lastTradeTime = candle?.time ?? Date.now();
   return true;
 }
@@ -6074,6 +6118,356 @@ function updateBotDeskOnCandle(candle, analysis) {
     if (plan && shouldOpenBotTrade(bot, analysis, plan)) {
       changed = openBotTrade(bot, analysis, plan, candle, "live") || changed;
     }
+  });
+
+  if (changed) saveBotDeskState();
+}
+
+function isHighProbabilityBot(bot) {
+  return ["eta", "theta", "iota"].includes(bot?.id);
+}
+
+function botStrategyLabel(strategy) {
+  if (strategy === "winrate") return "Win-rate first";
+  if (strategy === "expectancy") return "Expectancy balance";
+  if (strategy === "rr") return "R/R breakout";
+  if (strategy === "probability") return "High-probability confluence";
+  if (strategy === "quality") return "Low-volatility validation";
+  if (strategy === "retest") return "Retest confirmation";
+  return "Scenario";
+}
+
+function botProfileLabel(bot) {
+  const labels = {
+    alpha: "Stable bot: prioritizes win rate, validation pass, and weak-condition avoidance.",
+    beta: "Balanced bot: weighs win rate, expectancy, and recent learned edges.",
+    gamma: "Aggressive bot: still likes R/R, but avoids repeated stop-heavy patterns.",
+    delta: "Scalping bot: prefers tight TP, tight range, and low-volatility winners.",
+    epsilon: "Trend bot: favors EMA/VWAP/ADX alignment proven in its own records.",
+    zeta: "Validation bot: prioritizes 1Y sample size, profit factor, and learned reliability.",
+    eta: "High-probability bot: enters only when multi-indicator confluence and validation agree.",
+    theta: "Quality bot: prefers calm volatility, high win-rate samples, and low adverse movement.",
+    iota: "Retest bot: waits for price to be near a validated retest entry before entering.",
+  };
+  return labels[bot.id] || "Record-aware bot profile.";
+}
+
+function botTradePlanKey(bot, plan) {
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const win = Number(validation.winRate) || 0;
+  const expectancy = Number(validation.expectancyR) || 0;
+  const pf = Number(validation.profitFactor) || 0;
+  const sample = Number(validation.trades) || 0;
+  if (bot.strategy === "probability") {
+    return win * 2.25 + Math.max(0, expectancy) * 18 + pf * 14 + (plan.validationPass ? 22 : -12) + Math.min(sample, 80) * 0.08;
+  }
+  if (bot.strategy === "quality") {
+    return win * 2.1 + pf * 18 + Math.max(0, 0.75 - (validation.avgAdverseR || 0.55)) * 18 + (plan.grade === "A+" ? 12 : plan.grade === "A" ? 7 : 0);
+  }
+  if (bot.strategy === "retest") {
+    const widthPenalty = Math.max(0, (plan.entryHigh - plan.entryLow) / Math.max(tradeEntryReference(plan), 1) * 100 - 0.35) * 12;
+    return win * 1.9 + expectancy * 16 + pf * 10 + (plan.validationPass ? 18 : -8) - widthPenalty;
+  }
+  if (bot.strategy === "winrate") {
+    return win * 2 + expectancy * 10 + (plan.validationPass ? 25 : 0);
+  }
+  if (bot.strategy === "expectancy") {
+    return expectancy * 18 + win + (plan.rr || 0) * 3;
+  }
+  return (plan.rr || 0) * 20 + expectancy * 8 + (plan.validationPass ? 10 : 0);
+}
+
+function botDirectionProfile(bot) {
+  const map = {
+    alpha: { mode: "primary", maxSameSide: 5, hedgeBonus: 0, label: "primary trend" },
+    beta: { mode: "balanced", maxSameSide: 5, hedgeBonus: 7, label: "balanced rotation" },
+    gamma: { mode: "counter", maxSameSide: 4, hedgeBonus: 18, label: "counter/hedge" },
+    delta: { mode: "mean-reversion", maxSameSide: 4, hedgeBonus: 14, label: "mean reversion" },
+    epsilon: { mode: "primary", maxSameSide: 5, hedgeBonus: 2, label: "trend follow" },
+    zeta: { mode: "validation", maxSameSide: 5, hedgeBonus: 6, label: "validation best-side" },
+    eta: { mode: "validation", maxSameSide: 5, hedgeBonus: 4, label: "probability confluence" },
+    theta: { mode: "validation", maxSameSide: 5, hedgeBonus: 3, label: "quality validation" },
+    iota: { mode: "balanced", maxSameSide: 5, hedgeBonus: 9, label: "retest rotation" },
+  };
+  return map[bot.id] || { mode: "balanced", maxSameSide: 5, hedgeBonus: 6, label: "balanced" };
+}
+
+function botMaxRiskPct(bot) {
+  const map = {
+    alpha: 0.008,
+    beta: 0.009,
+    gamma: 0.011,
+    delta: 0.006,
+    epsilon: 0.008,
+    zeta: 0.007,
+    eta: 0.0055,
+    theta: 0.005,
+    iota: 0.006,
+  };
+  return map[bot.id] || 0.007;
+}
+
+function botSplitProfile(bot) {
+  const profiles = {
+    alpha: { entries: [0.55, 0.3, 0.15], exits: [0.5, 0.3, 1], name: "stable split" },
+    beta: { entries: [0.5, 0.3, 0.2], exits: [0.42, 0.33, 1], name: "balanced split" },
+    gamma: { entries: [0.45, 0.25, 0.3], exits: [0.3, 0.35, 1], name: "breakout split" },
+    delta: { entries: [0.65, 0.25, 0.1], exits: [0.58, 0.28, 1], name: "scalp split" },
+    epsilon: { entries: [0.5, 0.25, 0.25], exits: [0.32, 0.33, 1], name: "trend split" },
+    zeta: { entries: [0.55, 0.25, 0.2], exits: [0.48, 0.32, 1], name: "validation split" },
+    eta: { entries: [0.6, 0.25, 0.15], exits: [0.55, 0.3, 1], name: "probability split" },
+    theta: { entries: [0.62, 0.23, 0.15], exits: [0.6, 0.25, 1], name: "quality split" },
+    iota: { entries: [0.5, 0.35, 0.15], exits: [0.5, 0.3, 1], name: "retest split" },
+  };
+  return profiles[bot.id] || { entries: [0.55, 0.3, 0.15], exits: [0.45, 0.35, 1], name: "split" };
+}
+
+function lossKeySpecificity(key) {
+  const value = String(key || "");
+  if (value.startsWith("scenario:")) return 1;
+  if (value.startsWith("indicator:") || value === "validation:negative" || value === "similar:negative") return 0.9;
+  if (value.startsWith("sideBias:")) return 0.55;
+  if (value.startsWith("side:") || value.startsWith("emaStack:") || value.startsWith("vwap:") || value.startsWith("rsi:")) return 0.6;
+  return 0.25;
+}
+
+function lossKeyCanHardBlock(key) {
+  const value = String(key || "");
+  return value.startsWith("scenario:") || value.startsWith("indicator:") || value === "validation:negative" || value === "similar:negative";
+}
+
+function lossPressureForPlan(bot, plan, analysis, profile = null) {
+  const learning = profile || botLearningProfile(bot);
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry: tradeEntryReference(plan), reason: "loss-pressure-preview" });
+  const keys = new Set(tradeFeatureKeysFromSnapshot(snapshot));
+  const matches = (learning.lossHotspots || []).filter((edge) => keys.has(edge.key));
+  const validationWeak = botPlanValidationWeak(plan);
+  if (!matches.length) return { penalty: 0, hardBlock: false, matches: [], reasons: [] };
+
+  let penalty = 0;
+  const reasons = [];
+  matches.forEach((edge) => {
+    const specificity = lossKeySpecificity(edge.key);
+    const itemPenalty = clamp((edge.avgLossR * 9 + Math.max(0, edge.lossRate - 45) * 0.16 + edge.largeLosses * 3) * specificity, 2, 22);
+    penalty += itemPenalty;
+    reasons.push(`loss ${formatFeatureKey(edge.key)}`);
+  });
+  const specificRepeats = matches.filter((edge) => lossKeyCanHardBlock(edge.key));
+  const repeatedSpecific = specificRepeats.some((edge) => edge.losses >= 2 && edge.lossRate >= 55 && edge.avgLossR >= 0.75);
+  const hardBlock = repeatedSpecific && validationWeak && !specificRepeats.some((edge) => edge.winRate >= 58 && edge.avgR > 0.05);
+  return {
+    penalty: clamp(penalty, 0, 38),
+    hardBlock,
+    matches,
+    reasons,
+  };
+}
+
+function botLearningGate(bot, plan, analysis) {
+  const profile = botLearningProfile(bot);
+  const snapshot = buildTradeSnapshot({ bot, analysis, plan, entry: tradeEntryReference(plan), reason: "gate-preview" });
+  const keys = new Set(tradeFeatureKeysFromSnapshot(snapshot));
+  const blocked = profile.blockedEdges.filter((edge) => keys.has(edge.key));
+  const weak = profile.weakEdges.filter((edge) => keys.has(edge.key));
+  const strong = profile.strongEdges.filter((edge) => keys.has(edge.key));
+  const lossPressure = lossPressureForPlan(bot, plan, analysis, profile);
+  const reasons = [];
+  let adjustment = 0;
+
+  strong.forEach((edge) => {
+    adjustment += clamp(edge.avgR * 14 + (edge.winRate - 50) * 0.16 + (edge.targetRate - edge.stopRate) * 0.04, 2, 12);
+    reasons.push(`boost ${formatFeatureKey(edge.key)}`);
+  });
+  weak.forEach((edge) => {
+    const specificity = lossKeySpecificity(edge.key);
+    adjustment -= clamp((Math.abs(edge.avgR) * 18 + Math.max(0, edge.stopRate - 45) * 0.12) * specificity, 2, 18);
+    reasons.push(`penalty ${formatFeatureKey(edge.key)}`);
+  });
+  if (lossPressure.penalty) {
+    adjustment -= lossPressure.penalty;
+    reasons.push(...lossPressure.reasons);
+  }
+  if (profile.recentSlump && !strong.length) {
+    adjustment -= botPlanValidationWeak(plan) ? 10 : 6;
+    reasons.push("recent defensive mode");
+  }
+  if (plan.grade === "A+" || plan.grade === "A") adjustment += 4;
+  if (plan.grade === "C") adjustment -= 7;
+
+  const hardBlocked = blocked.some((edge) => lossKeyCanHardBlock(edge.key) && (edge.avgR < -0.22 || edge.stopRate >= 70));
+  const allowed = !(lossPressure.hardBlock && !strong.length) && !(hardBlocked && !strong.length) && !(profile.recentSlump && plan.grade === "C");
+  return {
+    allowed,
+    adjustment: clamp(adjustment, -50, 32),
+    reasons,
+    blocked,
+    weak,
+    strong,
+    lossPressure,
+  };
+}
+
+function highProbabilityChecks(bot, plan, analysis, gate) {
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const backtest = plan.backtest || validation;
+  const entry = tradeEntryReference(plan);
+  const distancePct = entry > 0 ? Math.abs(analysis.price - entry) / entry * 100 : 99;
+  const mtf = multiTimeframeAlignment(plan.side);
+  const atrPct = analysis.technicals?.atrPct ?? (analysis.price > 0 ? (analysis.atr / analysis.price) * 100 : 0);
+  const win = Number(validation.winRate) || 0;
+  const pf = Number(validation.profitFactor) || 0;
+  const expectancy = Number(validation.expectancyR) || 0;
+  const sample = Number(validation.trades) || 0;
+  const similarOk = (Number(backtest.profitFactor) || 0) >= 1.02 && (Number(backtest.expectancyR) || 0) >= -0.03;
+  const base = sample >= RECOMMENDATION_MIN_SAMPLE && win >= 53 && expectancy > 0 && pf >= 1.04 && analysis.confidence >= 50 && gate.adjustment > -26 && similarOk;
+  if (bot.id === "eta") return base && win >= 55 && pf >= 1.08 && mtf.ratio >= 0.5;
+  if (bot.id === "theta") return base && win >= 55 && pf >= 1.1 && atrPct >= 0.05 && atrPct <= 0.72 && (validation.avgAdverseR || 0.55) <= 0.85;
+  if (bot.id === "iota") return base && distancePct <= Math.max(0.22, (analysis.atr / Math.max(analysis.price, 1)) * 100 * 0.95) && (plan.grade === "A+" || plan.grade === "A" || win >= 57);
+  return base;
+}
+
+function botEntryEvaluation(bot, analysis, plan) {
+  if (!plan) return { allowed: false, reason: "추천 후보 없음" };
+  const validation = plan.validationBacktest || plan.backtest || {};
+  const gate = botLearningGate(bot, plan, analysis);
+  const exposure = botPortfolioExposureGate(bot, plan);
+  const lossPressure = gate.lossPressure || lossPressureForPlan(bot, plan, analysis);
+  if (!exposure.allowed) return { allowed: false, reason: "동일 방향 노출 제한" };
+  if (!gate.allowed || lossPressure.hardBlock) return { allowed: false, reason: "반복 손실 조건 차단" };
+
+  const nearEntry = Math.abs(analysis.price - tradeEntryReference(plan)) <= Math.max(analysis.atr * 0.34, analysis.price * 0.0014);
+  const inRange = analysis.price >= plan.entryLow && analysis.price <= plan.entryHigh;
+  const priceOk = inRange || nearEntry;
+  if (!priceOk) return { allowed: false, reason: "진입가 대기" };
+
+  if (isHighProbabilityBot(bot)) {
+    return highProbabilityChecks(bot, plan, analysis, gate)
+      ? { allowed: true, reason: "고확률 조건 충족" }
+      : { allowed: false, reason: "고확률 조건 대기" };
+  }
+
+  if (botLossStreak(bot) >= 3 && plan.grade === "C") return { allowed: false, reason: "연속 손실 후 C등급 회피" };
+  if (lossPressure.penalty >= 42 && plan.grade !== "A+") return { allowed: false, reason: "손실 클러스터 감점 과다" };
+
+  const confidenceFloor = bot.strategy === "rr" ? 44 : bot.strategy === "winrate" || bot.id === "zeta" ? 49 : 46;
+  const confidenceOk = analysis.confidence >= Math.max(40, confidenceFloor - Math.max(0, gate.adjustment) * 0.07);
+  if (!confidenceOk) return { allowed: false, reason: "지표 합의도 부족" };
+
+  if (bot.strategy === "winrate") {
+    return plan.validationPass && (validation.winRate || 0) >= 52 && (validation.expectancyR || 0) > -0.01 && (validation.profitFactor || 0) >= 1
+      ? { allowed: true, reason: "승률 조건 충족" }
+      : { allowed: false, reason: "승률/검증 부족" };
+  }
+  if (bot.strategy === "expectancy") {
+    return (validation.expectancyR || 0) > 0.06 && (validation.winRate || 0) >= 48 && (validation.profitFactor || 0) >= 1
+      ? { allowed: true, reason: "기대값 조건 충족" }
+      : { allowed: false, reason: "기대값 부족" };
+  }
+  if (bot.id === "delta") {
+    const entry = tradeEntryReference(plan);
+    const tpMovePct = entry > 0 ? Math.abs((plan.takeProfit1 || entry) - entry) / entry * 100 : 0;
+    return tpMovePct <= 0.85 && (validation.winRate || 0) >= 48 && (validation.expectancyR || 0) >= -0.01
+      ? { allowed: true, reason: "스캘핑 조건 충족" }
+      : { allowed: false, reason: "스캘핑 조건 대기" };
+  }
+  if (bot.id === "epsilon") {
+    return (validation.expectancyR || 0) > 0 && analysis.confidence >= 48
+      ? { allowed: true, reason: "추세 조건 충족" }
+      : { allowed: false, reason: "추세 조건 대기" };
+  }
+  return (plan.rr || 0) >= 1.05 && (validation.expectancyR || 0) >= -0.01 && (validation.winRate || 0) >= 46
+    ? { allowed: true, reason: "기본 진입 조건 충족" }
+    : { allowed: false, reason: "검증 조건 부족" };
+}
+
+function shouldOpenBotTrade(bot, analysis, plan) {
+  return botEntryEvaluation(bot, analysis, plan).allowed;
+}
+
+function pickBotScenario(analysis, bot) {
+  const scenarios = botScenarioPool(analysis, bot);
+  if (!scenarios.length) return null;
+  const ranked = scenarios
+    .map((plan) => {
+      const gate = botLearningGate(bot, plan, analysis);
+      const exposure = botPortfolioExposureGate(bot, plan);
+      const validation = plan.validationBacktest || plan.backtest || {};
+      const highProbBonus = isHighProbabilityBot(bot)
+        ? (Number(validation.winRate) || 0) * 0.55 + (Number(validation.profitFactor) || 0) * 8 + (plan.grade === "A+" ? 12 : plan.grade === "A" ? 7 : -4)
+        : 0;
+      const lossPenalty = gate.lossPressure?.penalty || 0;
+      const blockedPenalty = gate.allowed && exposure.allowed ? 0 : -999;
+      return {
+        plan,
+        score: botTradePlanKey(bot, plan) + botStrategyScore(bot, plan, analysis) + gate.adjustment + botDirectionScore(bot, plan, analysis) + highProbBonus - lossPenalty + blockedPenalty,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  return ranked[0]?.plan || null;
+}
+
+function attemptOpenBotTrade(bot, analysis, candle, reason) {
+  if (bot.openTrade || botIsDepleted(bot, candle.close ?? analysis.price)) return false;
+  const plan = pickBotScenario(analysis, bot);
+  const evaluation = botEntryEvaluation(bot, analysis, plan);
+  bot.lastSkipReason = evaluation.reason;
+  if (!evaluation.allowed) return false;
+  const opened = openBotTrade(bot, analysis, plan, candle, reason);
+  if (!opened) bot.lastSkipReason = "리스크 한도 대기";
+  return opened;
+}
+
+function startBotDeskTrading() {
+  const analysis = getDisplayAnalysis() || state.analyses[state.interval];
+  if (!analysis) return;
+  state.botDesk.running = true;
+  state.botDesk.seeded = true;
+  const candle = { time: Date.now(), close: analysis.price, open: analysis.previous || analysis.price, high: analysis.price, low: analysis.price };
+  let changed = false;
+  state.botDesk.bots.forEach((bot) => {
+    changed = attemptOpenBotTrade(bot, analysis, candle, "manual-start") || changed;
+  });
+  saveBotDeskState();
+  if (changed) renderAll();
+  else renderBotDesk();
+}
+
+function updateBotDeskOnCandle(candle, analysis) {
+  if (!analysis) return;
+  let changed = false;
+
+  state.botDesk.bots.forEach((bot) => {
+    if (!bot.openTrade || bot.lastTradeTime === candle.time) return;
+    const trade = normalizeSplitOpenTrade(bot.openTrade, bot, analysis);
+    const stopHit = trade.side === "long" ? candle.low <= trade.stopLoss : candle.high >= trade.stopLoss;
+    const nextTarget = (trade.targetPlan || []).find((target) => !target.filled);
+    const targetHit = nextTarget ? splitHit(trade, candle, nextTarget.price, "target") : false;
+    const favorableCandle = trade.side === "long" ? candle.close >= candle.open : candle.close <= candle.open;
+
+    if (stopHit && (!targetHit || !favorableCandle)) {
+      changed = closeBotTrade(bot, trade.stopLoss, candle, "stop") || changed;
+      return;
+    }
+
+    changed = processSplitScaleIns(bot, candle) || changed;
+    changed = processSplitTargets(bot, candle) || changed;
+  });
+
+  if (!state.botDesk.running) {
+    if (changed) saveBotDeskState();
+    return;
+  }
+
+  const hasTradableCapital = state.botDesk.bots.some((bot) => bot.openTrade || !botIsDepleted(bot, candle.close));
+  if (!hasTradableCapital) {
+    state.botDesk.running = false;
+    saveBotDeskState();
+    return;
+  }
+
+  state.botDesk.bots.forEach((bot) => {
+    if (bot.openTrade || bot.lastTradeTime === candle.time) return;
+    changed = attemptOpenBotTrade(bot, analysis, candle, "live") || changed;
   });
 
   if (changed) saveBotDeskState();
