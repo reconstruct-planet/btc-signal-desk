@@ -6473,6 +6473,334 @@ function updateBotDeskOnCandle(candle, analysis) {
   if (changed) saveBotDeskState();
 }
 
+function botValidationStats(plan) {
+  const validation = plan?.validationBacktest || plan?.backtest || {};
+  const backtest = plan?.backtest || validation;
+  return {
+    validation,
+    backtest,
+    trades: Number(validation.trades) || 0,
+    winRate: Number(validation.winRate) || 0,
+    expectancyR: Number(validation.expectancyR) || 0,
+    profitFactor: Number(validation.profitFactor) || 0,
+    avgAdverseR: Number(validation.avgAdverseR) || 0,
+    similarTrades: Number(backtest.trades) || 0,
+    similarWinRate: Number(backtest.winRate) || 0,
+    similarExpectancyR: Number(backtest.expectancyR) || 0,
+    similarProfitFactor: Number(backtest.profitFactor) || 0,
+  };
+}
+
+function botAtrPct(analysis) {
+  return Number(analysis?.technicals?.atrPct) || (analysis?.price > 0 ? (analysis.atr / analysis.price) * 100 : 0);
+}
+
+function botEntryDistancePct(plan, analysis) {
+  const entry = tradeEntryReference(plan);
+  const price = Number(analysis?.price) || entry;
+  return entry > 0 ? Math.abs(price - entry) / entry * 100 : 99;
+}
+
+function botEntryWidthPct(plan, analysis) {
+  const reference = tradeEntryReference(plan) || Number(analysis?.price) || 1;
+  return reference > 0 ? Math.abs((Number(plan?.entryHigh) || reference) - (Number(plan?.entryLow) || reference)) / reference * 100 : 0;
+}
+
+function botIntervalEntryLimit(intervalKey, bot) {
+  const limits = {
+    "5m": 0.3,
+    "15m": 0.42,
+    "1h": 0.68,
+    "4h": 1.05,
+    "1d": 1.6,
+  };
+  const base = limits[intervalKey] || 0.58;
+  if (bot?.id === "iota") return base * 0.78;
+  if (bot?.id === "theta") return base * 0.92;
+  return base;
+}
+
+function botPlanSideConflict(plan, analysis) {
+  const marketSide = analysis?.bias === "bearish" ? "short" : analysis?.bias === "bullish" ? "long" : null;
+  return Boolean(marketSide && plan?.side && plan.side !== marketSide);
+}
+
+function botIndicatorConflictCount(plan, analysis) {
+  const side = plan?.side === "short" ? -1 : plan?.side === "long" ? 1 : 0;
+  if (!side) return 0;
+  return (analysis?.indicators || [])
+    .filter((item) => Math.abs(Number(item.signal) || 0) >= 0.55)
+    .filter((item) => Math.sign(Number(item.signal) || 0) !== side)
+    .slice(0, 8).length;
+}
+
+function botOnchainAligned(plan, analysis) {
+  const score = Number(analysis?.chain?.score ?? onchainScore(state.onchain).score ?? 50);
+  if (plan?.side === "long") return score >= 43;
+  if (plan?.side === "short") return score <= 62;
+  return true;
+}
+
+function failureAvoidanceForPlan(bot, plan, analysis, gate = null) {
+  const profile = botLearningProfile(bot);
+  const validation = botValidationStats(plan);
+  const intervalKey = state.interval || analysis?.interval || "unknown";
+  const sideStats = (profile.bySide || []).find((item) => item.key === plan?.side);
+  const intervalStats = (profile.byInterval || []).find((item) => item.key === intervalKey);
+  const entryWidth = botEntryWidthPct(plan, analysis);
+  const atrPct = botAtrPct(analysis);
+  const sideConflict = botPlanSideConflict(plan, analysis);
+  const indicatorConflicts = botIndicatorConflictCount(plan, analysis);
+  const reasons = [];
+  let penalty = 0;
+  let hardBlock = false;
+
+  const add = (points, reason) => {
+    penalty += points;
+    reasons.push(reason);
+  };
+
+  if (sideStats?.trades >= BOT_LEARNING_MIN_TRADES && (sideStats.stopRate >= 62 || sideStats.avgR < -0.08)) {
+    add(clamp(Math.abs(sideStats.avgR) * 18 + Math.max(0, sideStats.stopRate - 55) * 0.22, 4, 18), `weak ${plan.side} history`);
+  }
+  if (intervalStats?.trades >= BOT_LEARNING_MIN_TRADES && (intervalStats.stopRate >= 62 || intervalStats.avgR < -0.08)) {
+    add(clamp(Math.abs(intervalStats.avgR) * 16 + Math.max(0, intervalStats.stopRate - 55) * 0.18, 3, 14), `weak ${intervalKey} history`);
+  }
+  if (profile.recentSlump) add(botPlanValidationWeak(plan) ? 12 : 7, "recent loss cluster");
+  if (validation.trades < RECOMMENDATION_MIN_SAMPLE) add(8, "thin 1Y sample");
+  if (validation.profitFactor < 1 && validation.expectancyR <= 0) add(10, "weak validation edge");
+  if (sideConflict && analysis?.confidence < 64) add(8, "counter-bias without strong confidence");
+  if (indicatorConflicts >= 3) add(7, "indicator conflict");
+  if (entryWidth > botIntervalEntryLimit(intervalKey, bot) * 1.25) add(7, "wide entry range");
+  if (atrPct > 1.55) add(7, "high volatility stop risk");
+  if (atrPct > 0 && atrPct < 0.08) add(5, "low-volatility chop risk");
+
+  const lossPressure = gate?.lossPressure || lossPressureForPlan(bot, plan, analysis, profile);
+  const specificLoss = (lossPressure.matches || []).some((edge) => lossKeyCanHardBlock(edge.key));
+  if (lossPressure.hardBlock && specificLoss) hardBlock = true;
+  if (penalty >= 30 && botPlanValidationWeak(plan) && !["A+", "A"].includes(plan?.grade)) hardBlock = true;
+
+  return {
+    penalty: clamp(penalty, 0, 42),
+    hardBlock,
+    reasons: reasons.slice(0, 5),
+    profile,
+    lossPressure,
+  };
+}
+
+function highProbabilityTier(bot, plan, analysis, gate = botLearningGate(bot, plan, analysis)) {
+  if (!isHighProbabilityBot(bot) || !plan) return { allowed: false, tier: "none", reason: "not high-probability bot", score: 0 };
+  const stats = botValidationStats(plan);
+  const mtf = multiTimeframeAlignment(plan.side);
+  const intervalKey = state.interval || "5m";
+  const atrPct = botAtrPct(analysis);
+  const distancePct = botEntryDistancePct(plan, analysis);
+  const widthPct = botEntryWidthPct(plan, analysis);
+  const entryLimit = botIntervalEntryLimit(intervalKey, bot);
+  const avoidance = failureAvoidanceForPlan(bot, plan, analysis, gate);
+  const similarOk = stats.similarProfitFactor >= 1.01 && stats.similarExpectancyR >= -0.04;
+  const currentChecks = [
+    stats.trades >= RECOMMENDATION_MIN_SAMPLE,
+    stats.winRate >= 52.5,
+    stats.expectancyR >= -0.01,
+    stats.profitFactor >= 1.03,
+    (Number(analysis?.confidence) || 0) >= 48,
+    mtf.ratio >= 0.42,
+    atrPct >= 0.04 && atrPct <= 1.15,
+    widthPct <= entryLimit * 1.2,
+    distancePct <= Math.max(entryLimit, atrPct * 0.85, 0.2),
+    botOnchainAligned(plan, analysis),
+    botIndicatorConflictCount(plan, analysis) <= 2,
+    gate.adjustment > -28,
+    similarOk,
+  ];
+  const passed = currentChecks.filter(Boolean).length;
+  const total = currentChecks.length;
+  const validationScore =
+    clamp((stats.winRate - 50) * 1.6, -10, 16) +
+    clamp(stats.expectancyR * 22, -8, 12) +
+    clamp((stats.profitFactor - 1) * 28, -8, 14);
+  const score = clamp((passed / total) * 74 + validationScore + clamp(gate.adjustment, -16, 12) - avoidance.penalty * 0.45, 0, 100);
+  const hardReject =
+    avoidance.hardBlock ||
+    stats.trades < 12 ||
+    (stats.winRate < 49 && stats.profitFactor < 1.04) ||
+    (stats.profitFactor < 0.97 && stats.expectancyR < -0.03) ||
+    gate.adjustment <= -38 ||
+    distancePct > Math.max(entryLimit * 1.9, atrPct * 1.4, 0.55);
+
+  let strict = score >= 78 && stats.winRate >= 54.5 && stats.profitFactor >= 1.06 && stats.expectancyR >= 0 && mtf.ratio >= 0.48;
+  let qualified = score >= 64 && passed >= 8 && stats.winRate >= 51 && stats.profitFactor >= 1 && gate.adjustment > -30;
+
+  if (bot.id === "theta") {
+    strict = strict && atrPct >= 0.04 && atrPct <= 0.85 && (stats.avgAdverseR || 0.65) <= 1.05;
+    qualified = qualified && atrPct >= 0.03 && atrPct <= 1.0 && (stats.avgAdverseR || 0.65) <= 1.18;
+  }
+  if (bot.id === "iota") {
+    strict = strict && distancePct <= Math.max(entryLimit, atrPct * 0.75, 0.18);
+    qualified = qualified && distancePct <= Math.max(entryLimit * 1.15, atrPct * 0.95, 0.24);
+  }
+  if (bot.id === "eta") {
+    strict = strict && botIndicatorConflictCount(plan, analysis) <= 1;
+    qualified = qualified && mtf.ratio >= 0.38;
+  }
+
+  if (hardReject || (!strict && !qualified)) {
+    const weakPoint = avoidance.reasons[0] || (stats.trades < RECOMMENDATION_MIN_SAMPLE ? "thin validation sample" : distancePct > entryLimit ? "entry distance wait" : "confluence wait");
+    return {
+      allowed: false,
+      tier: "wait",
+      reason: `High-prob wait: ${weakPoint}`,
+      score,
+      passed,
+      total,
+      avoidance,
+      mtf,
+    };
+  }
+
+  return {
+    allowed: true,
+    tier: strict ? "strict" : "qualified",
+    reason: strict ? "High-prob strict entry" : "High-prob qualified micro entry",
+    score,
+    passed,
+    total,
+    avoidance,
+    mtf,
+  };
+}
+
+function highProbabilityChecks(bot, plan, analysis, gate) {
+  return highProbabilityTier(bot, plan, analysis, gate).allowed;
+}
+
+function highProbabilityRiskFactor(bot, plan, analysis, gate = null) {
+  if (!isHighProbabilityBot(bot)) return 1;
+  const tier = highProbabilityTier(bot, plan, analysis, gate || botLearningGate(bot, plan, analysis));
+  if (!tier.allowed) return 0;
+  return tier.tier === "strict" ? 1 : 0.58;
+}
+
+function botPlanRiskMultiplier(bot, plan, analysis) {
+  const profile = botLearningProfile(bot);
+  const gate = botLearningGate(bot, plan, analysis);
+  const avoidance = failureAvoidanceForPlan(bot, plan, analysis, gate);
+  const pressure = avoidance.lossPressure || lossPressureForPlan(bot, plan, analysis, profile);
+  let multiplier = botRiskMultiplier(bot);
+
+  if (pressure.hardBlock || avoidance.hardBlock) return 0;
+  if (pressure.penalty >= 24) multiplier *= 0.45;
+  else if (pressure.penalty >= 12) multiplier *= 0.65;
+  if (avoidance.penalty >= 24) multiplier *= 0.5;
+  else if (avoidance.penalty >= 12) multiplier *= 0.7;
+  if (botPlanValidationWeak(plan) && pressure.matches.length) multiplier *= 0.75;
+  if (isHighProbabilityBot(bot)) multiplier *= highProbabilityRiskFactor(bot, plan, analysis, gate);
+  return clamp(multiplier, 0.12, 1);
+}
+
+function botEntryEvaluation(bot, analysis, plan) {
+  if (!plan) return { allowed: false, reason: "No scenario" };
+  const stats = botValidationStats(plan);
+  const gate = botLearningGate(bot, plan, analysis);
+  const exposure = botPortfolioExposureGate(bot, plan);
+  const avoidance = failureAvoidanceForPlan(bot, plan, analysis, gate);
+  const lossPressure = gate.lossPressure || avoidance.lossPressure || lossPressureForPlan(bot, plan, analysis);
+
+  if (!exposure.allowed) return { allowed: false, reason: "Side exposure cap" };
+  if (!gate.allowed || lossPressure.hardBlock || avoidance.hardBlock) return { allowed: false, reason: "Repeated loss pattern blocked" };
+
+  const price = Number(analysis?.price) || tradeEntryReference(plan);
+  const entry = tradeEntryReference(plan);
+  const proximity = isHighProbabilityBot(bot)
+    ? Math.max((Number(analysis?.atr) || 0) * 0.5, price * 0.0022)
+    : Math.max((Number(analysis?.atr) || 0) * 0.34, price * 0.0014);
+  const nearEntry = Math.abs(price - entry) <= proximity;
+  const inRange = price >= Number(plan.entryLow) && price <= Number(plan.entryHigh);
+  if (!inRange && !nearEntry) return { allowed: false, reason: "Waiting for entry zone" };
+
+  if (isHighProbabilityBot(bot)) {
+    const tier = highProbabilityTier(bot, plan, analysis, gate);
+    return tier.allowed
+      ? { allowed: true, reason: tier.reason, tier: tier.tier, score: tier.score }
+      : { allowed: false, reason: tier.reason, tier: tier.tier, score: tier.score };
+  }
+
+  if (botLossStreak(bot) >= 3 && plan.grade === "C") return { allowed: false, reason: "Loss streak avoids C grade" };
+  if (lossPressure.penalty >= 42 && plan.grade !== "A+") return { allowed: false, reason: "Loss cluster penalty too high" };
+  if (avoidance.penalty >= 32 && !["A+", "A"].includes(plan.grade)) return { allowed: false, reason: "Failed-trade guard" };
+
+  const confidenceFloor = bot.strategy === "rr" ? 44 : bot.strategy === "winrate" || bot.id === "zeta" ? 49 : 46;
+  const confidenceOk = (Number(analysis?.confidence) || 0) >= Math.max(40, confidenceFloor - Math.max(0, gate.adjustment) * 0.07);
+  if (!confidenceOk) return { allowed: false, reason: "Indicator confidence low" };
+
+  if (bot.strategy === "winrate") {
+    return plan.validationPass && stats.winRate >= 52 && stats.expectancyR > -0.01 && stats.profitFactor >= 1
+      ? { allowed: true, reason: "Win-rate gate passed" }
+      : { allowed: false, reason: "Win-rate validation wait" };
+  }
+  if (bot.strategy === "expectancy") {
+    return stats.expectancyR > 0.06 && stats.winRate >= 48 && stats.profitFactor >= 1
+      ? { allowed: true, reason: "Expectancy gate passed" }
+      : { allowed: false, reason: "Expectancy wait" };
+  }
+  if (bot.id === "delta") {
+    const tpMovePct = entry > 0 ? Math.abs((plan.takeProfit1 || entry) - entry) / entry * 100 : 0;
+    return tpMovePct <= 0.85 && stats.winRate >= 48 && stats.expectancyR >= -0.01
+      ? { allowed: true, reason: "Scalp gate passed" }
+      : { allowed: false, reason: "Scalp condition wait" };
+  }
+  if (bot.id === "epsilon") {
+    return stats.expectancyR > 0 && (Number(analysis?.confidence) || 0) >= 48
+      ? { allowed: true, reason: "Trend gate passed" }
+      : { allowed: false, reason: "Trend condition wait" };
+  }
+  return (plan.rr || 0) >= 1.05 && stats.expectancyR >= -0.01 && stats.winRate >= 46
+    ? { allowed: true, reason: "Base gate passed" }
+    : { allowed: false, reason: "Validation wait" };
+}
+
+function pickBotScenario(analysis, bot) {
+  const scenarios = botScenarioPool(analysis, bot);
+  if (!scenarios.length) return null;
+  const ranked = scenarios
+    .map((plan) => {
+      const gate = botLearningGate(bot, plan, analysis);
+      const exposure = botPortfolioExposureGate(bot, plan);
+      const avoidance = failureAvoidanceForPlan(bot, plan, analysis, gate);
+      const validation = botValidationStats(plan);
+      const tier = isHighProbabilityBot(bot) ? highProbabilityTier(bot, plan, analysis, gate) : null;
+      const highProbBonus = tier
+        ? (tier.allowed ? tier.score * 0.55 : -18) + (tier.tier === "strict" ? 18 : tier.tier === "qualified" ? 8 : 0)
+        : 0;
+      const lossPenalty = (gate.lossPressure?.penalty || 0) + avoidance.penalty;
+      const validationBonus = isHighProbabilityBot(bot)
+        ? validation.winRate * 0.22 + validation.profitFactor * 4 + Math.max(0, validation.expectancyR) * 10
+        : 0;
+      const blockedPenalty = gate.allowed && exposure.allowed && !avoidance.hardBlock ? 0 : -999;
+      return {
+        plan,
+        score: botTradePlanKey(bot, plan) + botStrategyScore(bot, plan, analysis) + gate.adjustment + botDirectionScore(bot, plan, analysis) + highProbBonus + validationBonus - lossPenalty + blockedPenalty,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  return ranked[0]?.plan || null;
+}
+
+function attemptOpenBotTrade(bot, analysis, candle, reason) {
+  if (bot.openTrade || botIsDepleted(bot, candle.close ?? analysis.price)) return false;
+  const plan = pickBotScenario(analysis, bot);
+  const evaluation = botEntryEvaluation(bot, analysis, plan);
+  bot.lastSkipReason = evaluation.reason;
+  bot.pendingEntryQuality = evaluation.tier || null;
+  bot.pendingEntryScore = Number.isFinite(evaluation.score) ? evaluation.score : null;
+  if (!evaluation.allowed) return false;
+  const opened = openBotTrade(bot, analysis, plan, candle, reason);
+  if (!opened) bot.lastSkipReason = "Risk sizing wait";
+  return opened;
+}
+
 function boot() {
   bindEvents();
   state.botDesk = loadBotDeskState();
